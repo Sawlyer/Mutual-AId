@@ -1,12 +1,11 @@
+import { TooltipProvider } from '@/components/ui/tooltip'
+import { router } from '@/app/router'
+import { RouterProvider } from 'react-router'
+
 export default function App() {
   return (
-    <main className="welcome">
-      <p className="eyebrow">MultiAgent-AI</p>
-      <h1>Votre projet React est prêt.</h1>
-      <p>
-        Modifiez <code>src/App.tsx</code> pour commencer à construire votre
-        application.
-      </p>
-    </main>
+    <TooltipProvider>
+      <RouterProvider router={router} />
+    </TooltipProvider>
   )
 }
