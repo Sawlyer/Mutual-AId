@@ -31,4 +31,4 @@ npm run dev
 
 ## Pages disponibles
 
-Dashboard, Missions, Agents, Analytics et Paramètres. La création et le filtrage des missions, la navigation mobile et le choix du thème fonctionnent avec les données de démonstration.
+Dashboard, Missions, détail d’une mission, création, Agents, Analytics et Paramètres. Le planificateur applique des modèles déterministes de démonstration ; aucun LLM ni backend n’est connecté. Les missions et événements créés sont mémorisés dans le stockage local du navigateur.

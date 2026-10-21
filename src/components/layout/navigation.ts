@@ -32,6 +32,14 @@ export const pageMeta: Record<string, { title: string; description: string }> = 
     title: 'Missions',
     description: 'Pilotez vos workflows et suivez leur progression.',
   },
+  '/missions/new': {
+    title: 'Nouvelle mission',
+    description: 'Définissez le résultat attendu et préparez votre orchestration.',
+  },
+  '/missions/:missionId': {
+    title: 'Détail de la mission',
+    description: 'Suivez les tâches, agents et livrables de votre mission.',
+  },
   '/agents': {
     title: 'Agents',
     description: 'Retrouvez vos agents et leur état opérationnel.',

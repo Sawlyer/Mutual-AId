@@ -11,7 +11,7 @@ interface AppHeaderProps {
 
 export function AppHeader({ onOpenNavigation }: AppHeaderProps) {
   const { pathname } = useLocation()
-  const page = pageMeta[pathname] ?? {
+  const page = pageMeta[pathname] ?? (pathname.startsWith('/missions/') ? pageMeta['/missions/:missionId'] : undefined) ?? {
     title: 'Page introuvable',
     description: 'Cette page ne fait pas partie de votre espace.',
   }
