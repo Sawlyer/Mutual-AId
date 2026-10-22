@@ -1,6 +1,6 @@
 # Mutual-AId
 
-Mutual-AId est une interface de chat React + Vite + TypeScript reliée à un backend FastAPI. Le backend utilise le SDK officiel OpenAI Agents pour répondre en streaming SSE et conserve les conversations dans SQLite. L’agent Assistant ne possède pas encore d’outils ni de délégation multi-agents.
+Mutual-AId est une interface de chat React + Vite + TypeScript reliée à un backend FastAPI. Le backend utilise le SDK officiel OpenAI Agents, conserve les conversations dans SQLite et peut planifier les demandes complexes en tâches suivies dans un workflow. Google Calendar est disponible en lecture seule lorsque son OAuth est configuré.
 
 ## Prérequis
 
@@ -17,7 +17,7 @@ Après avoir cloné le projet, lancez cette commande depuis sa racine :
 npm run dev:all
 ```
 
-Elle installe les dépendances frontend si nécessaire, prépare les fichiers d’environnement d’exemple s’ils n’existent pas, puis démarre Vite et FastAPI. **Ctrl+C arrête les deux serveurs.** Ouvrez l’adresse affichée par Vite, généralement `http://127.0.0.1:5173`.
+Elle installe les dépendances si nécessaire, prépare les fichiers d’environnement d’exemple s’ils n’existent pas, puis démarre Vite et FastAPI. Si les deux services tournent déjà, elle détecte leur état et ne crée pas de doublons. Si un seul port est occupé, elle affiche une erreur explicite. **Ctrl+C arrête proprement les deux serveurs.** Ouvrez l’adresse affichée par Vite, généralement `http://127.0.0.1:5173`.
 
 Pour activer les réponses IA, renseignez `OPENAI_API_KEY` et `OPENAI_MODEL` dans `backend/.env`, puis relancez la commande. Les comptes, conversations et sessions sont stockés dans SQLite localement.
 
