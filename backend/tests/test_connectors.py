@@ -80,13 +80,43 @@ def test_mcp_tool_approval_only_accepts_discovered_tools(tmp_path):
         client.post("/api/auth/register", json={"name": "Tools", "email": "tools@example.com", "password": "tools test password long"})
         server = client.post("/api/connectors/mcp", json={"name": "Docs", "url": "https://example.com/mcp"}).json()
         user_id = client.app.state.database.get_user_by_email("tools@example.com")["id"]
-        client.app.state.database.update_mcp_server_tools(user_id, server["id"], [{"name": "search_docs", "description": "Search documentation"}])
+        client.app.state.database.update_mcp_server_tools(user_id, server["id"], [{"name": "search_docs", "description": "Search documentation", "access": "read"}])
         selected = client.put(f"/api/connectors/mcp/{server['id']}/tools", json={"tool_names": ["search_docs"]})
         rejected = client.put(f"/api/connectors/mcp/{server['id']}/tools", json={"tool_names": ["delete_all"]})
 
     assert selected.status_code == 200
     assert selected.json()["approved_tool_names"] == ["search_docs"]
     assert rejected.status_code == 422
+
+
+def test_mcp_connectors_are_user_scoped_in_catalog_and_conversation_preferences(tmp_path):
+    db_path = tmp_path / "mcp-preferences.sqlite3"
+    settings = Settings(database_path=db_path, openai_api_key="", openai_model="")
+    with TestClient(create_app(settings)) as owner:
+        owner.post("/api/auth/register", json={"name": "Owner", "email": "mcp-owner@example.com", "password": "owner password long enough"})
+        created = owner.post("/api/connectors/mcp", json={"name": "Docs MCP", "url": "https://8.8.8.8/mcp"}).json()
+        user_id = owner.app.state.database.get_user_by_email("mcp-owner@example.com")["id"]
+        owner.app.state.database.update_mcp_server_tools(user_id, created["id"], [
+            {"name": "search_docs", "description": "Search docs", "access": "read"},
+        ])
+        owner.app.state.database.set_mcp_server_approved_tools(user_id, created["id"], ["search_docs"])
+        conversation = owner.post("/api/conversations", json={}).json()
+        selected = owner.put(f"/api/conversations/{conversation['id']}/connectors", json={"connector_ids": [f"mcp:{created['id']}"]})
+        catalog = owner.get("/api/connectors").json()
+        prefs = owner.get(f"/api/conversations/{conversation['id']}/connectors").json()
+        owner.delete(f"/api/connectors/mcp/{created['id']}")
+        cleaned = owner.get(f"/api/conversations/{conversation['id']}/connectors").json()
+
+    assert selected.status_code == 200
+    assert selected.json()["connectors"][0]["available_tools"][0]["name"] == "search_docs"
+    assert any(item["id"] == f"mcp:{created['id']}" for item in catalog)
+    assert prefs["connector_ids"] == [f"mcp:{created['id']}"]
+    assert cleaned["connectors"] == []
+
+    with TestClient(create_app(settings)) as other:
+        other.post("/api/auth/register", json={"name": "Other", "email": "mcp-other@example.com", "password": "other password long enough"})
+        conversation = other.post("/api/conversations", json={}).json()
+        assert other.put(f"/api/conversations/{conversation['id']}/connectors", json={"connector_ids": [f"mcp:{created['id']}"]}).status_code == 409
 
 
 def test_connector_preferences_are_scoped_to_conversation_and_survive_reads(tmp_path):

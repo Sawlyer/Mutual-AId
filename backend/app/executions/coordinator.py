@@ -9,6 +9,7 @@ from app.connectors.context import ConnectorToolContext
 from app.connectors.google_oauth import GoogleOAuthClient
 from app.connectors.github_oauth import GitHubAppOAuthClient
 from app.connectors.tools import ConnectorAuthorizationError, ToolRegistry
+from app.connectors.mcp_runtime import McpAuthorizationError, McpRuntime, MCP_CONNECTOR_PREFIX
 from app.db import Database
 from app.executions.models import ExecutionRead, TaskRead
 from app.executions.repository import ExecutionRepository
@@ -22,7 +23,7 @@ class AgentTaskExecutor:
 
     def __init__(self, settings: Settings, repository: ExecutionRepository, user_id: str, execution_id: str,
                  database: Database, tool_registry: ToolRegistry, google_oauth: GoogleOAuthClient | None,
-                 github_oauth: GitHubAppOAuthClient | None = None):
+                 github_oauth: GitHubAppOAuthClient | None = None, mcp_runtime: McpRuntime | None = None):
         self.settings = settings
         self.repository = repository
         self.user_id = user_id
@@ -31,6 +32,7 @@ class AgentTaskExecutor:
         self.tool_registry = tool_registry
         self.google_oauth = google_oauth
         self.github_oauth = github_oauth
+        self.mcp_runtime = mcp_runtime
 
     async def __call__(self, task: TaskRead) -> str:
         if not self.settings.openai_configured:
@@ -42,26 +44,42 @@ class AgentTaskExecutor:
             candidate.id: candidate.result for candidate in (execution.tasks if execution else [])
             if candidate.id in task.dependencies and candidate.result
         }
+        mcp_ids = [connector_id for connector_id in task.connector_ids if connector_id.startswith(MCP_CONNECTOR_PREFIX)]
+        static_ids = [connector_id for connector_id in task.connector_ids if not connector_id.startswith(MCP_CONNECTOR_PREFIX)]
         try:
-            tools = self.tool_registry.tools_for_user(self.user_id, task.connector_ids, self.database)
+            tools = self.tool_registry.tools_for_user(self.user_id, static_ids, self.database)
+            if mcp_ids:
+                if self.mcp_runtime is None:
+                    raise McpAuthorizationError("MCP runtime is unavailable")
+                self.mcp_runtime.validate_selection(self.user_id, mcp_ids)
         except ConnectorAuthorizationError as error:
             raise RuntimeError("A required connector is no longer authorized") from error
-        if any(connector_id in {"gmail", "google_drive", "google_calendar"} for connector_id in task.connector_ids) and self.google_oauth is None:
+        except McpAuthorizationError as error:
+            raise RuntimeError("A required MCP server is no longer authorized") from error
+        if any(connector_id in {"gmail", "google_drive", "google_calendar"} for connector_id in static_ids) and self.google_oauth is None:
             raise RuntimeError("Connector provider is unavailable")
-        if "github" in task.connector_ids and self.github_oauth is None:
+        if "github" in static_ids and self.github_oauth is None:
             raise RuntimeError("Connector provider is unavailable")
-        context = ConnectorToolContext(self.user_id, self.database, self.google_oauth, self.github_oauth) if task.connector_ids else None
-        agent = Agent(
-            name=str(snapshot.get("name") or "Assistant"), instructions=instructions,
-            model=self.settings.openai_model.strip(), tools=tools,
-        )
+        context = ConnectorToolContext(self.user_id, self.database, self.google_oauth, self.github_oauth) if static_ids else None
         prompt = (
             f"Task: {task.title}\nDescription: {task.description}\nExpected output: {task.expected_output}\n"
             f"Completed dependency outputs: {dependency_results}\n"
             "Return the requested user-facing result. Report only information returned by authorized tools."
         )
-        result = await Runner.run(agent, prompt, context=context, max_turns=self.settings.max_agent_turns,
-                                  run_config=RunConfig(tracing_disabled=True))
+        if self.mcp_runtime:
+            async with self.mcp_runtime.open_approved_servers(self.user_id, mcp_ids) as mcp_servers:
+                agent = Agent(
+                    name=str(snapshot.get("name") or "Assistant"), instructions=instructions,
+                    model=self.settings.openai_model.strip(), tools=tools, mcp_servers=mcp_servers,
+                    mcp_config={"include_server_in_tool_names": True, "failure_error_function": None} if mcp_servers else None,
+                )
+                result = await Runner.run(agent, prompt, context=context, max_turns=self.settings.max_agent_turns,
+                                          run_config=RunConfig(tracing_disabled=True))
+        else:
+            agent = Agent(name=str(snapshot.get("name") or "Assistant"), instructions=instructions,
+                          model=self.settings.openai_model.strip(), tools=tools)
+            result = await Runner.run(agent, prompt, context=context, max_turns=self.settings.max_agent_turns,
+                                      run_config=RunConfig(tracing_disabled=True))
         output = result.final_output
         if not isinstance(output, str) or not output.strip():
             raise RuntimeError("Task returned no user-facing result")
@@ -71,7 +89,7 @@ class AgentTaskExecutor:
 class ExecutionCoordinator:
     def __init__(self, repository: ExecutionRepository, agent_service: AgentService, settings: Settings,
                  database: Database, tool_registry: ToolRegistry, google_oauth: GoogleOAuthClient | None,
-                 github_oauth: GitHubAppOAuthClient | None = None):
+                 github_oauth: GitHubAppOAuthClient | None = None, mcp_runtime: McpRuntime | None = None):
         self.repository = repository
         self.agent_service = agent_service
         self.settings = settings
@@ -79,6 +97,7 @@ class ExecutionCoordinator:
         self.tool_registry = tool_registry
         self.google_oauth = google_oauth
         self.github_oauth = github_oauth
+        self.mcp_runtime = mcp_runtime
         self._background: dict[str, asyncio.Task[None]] = {}
         self._cancel: dict[str, asyncio.Event] = {}
         self._user_semaphores: dict[str, asyncio.Semaphore] = {}
@@ -105,7 +124,7 @@ class ExecutionCoordinator:
         if execution is None:
             return
         handler = AgentTaskExecutor(self.settings, self.repository, user_id, execution_id,
-                                    self.database, self.tool_registry, self.google_oauth, self.github_oauth)
+                                    self.database, self.tool_registry, self.google_oauth, self.github_oauth, self.mcp_runtime)
         user_semaphore = self._user_semaphores.setdefault(user_id, asyncio.Semaphore(self.settings.max_parallel_tasks))
 
         async def execute_with_user_limit(task: TaskRead) -> str:

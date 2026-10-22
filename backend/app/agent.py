@@ -24,10 +24,14 @@ def configure_openai(settings: Settings) -> None:
         set_default_openai_key(settings.api_key_value, use_for_tracing=False)
 
 
-def build_assistant(settings: Settings, tools: Sequence[object] = ()) -> Agent:
+def build_assistant(settings: Settings, tools: Sequence[object] = (), mcp_servers: Sequence[object] = ()) -> Agent:
     if not settings.openai_configured or not settings.openai_model:
         raise RuntimeError("OpenAI is not configured")
-    return Agent(name="Assistant", instructions=ASSISTANT_INSTRUCTIONS, model=settings.openai_model.strip(), tools=list(tools))
+    return Agent(
+        name="Assistant", instructions=ASSISTANT_INSTRUCTIONS, model=settings.openai_model.strip(),
+        tools=list(tools), mcp_servers=list(mcp_servers),
+        mcp_config={"include_server_in_tool_names": True, "failure_error_function": None} if mcp_servers else None,
+    )
 
 
 async def stream_assistant(
@@ -36,9 +40,10 @@ async def stream_assistant(
     settings: Settings,
     tools: Sequence[object] = (),
     context: object | None = None,
+    mcp_servers: Sequence[object] = (),
 ) -> AsyncIterator[str]:
     """Stream only user-visible text deltas; omit reasoning and non-text SDK events."""
-    agent = build_assistant(settings, tools) if tools else build_assistant(settings)
+    agent = build_assistant(settings, tools, mcp_servers) if tools or mcp_servers else build_assistant(settings)
     session = AsyncSQLiteSession(conversation_id, db_path=str(settings.database_path))
     result = None
     try:

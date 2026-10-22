@@ -41,7 +41,7 @@ class McpService:
     def set_allowed_tools(self, user_id: str, server_id: str, names: list[str]) -> McpServerRead:
         server = self.get_server(user_id, server_id)
         tools = json.loads(str(server["discovered_tools_json"]))
-        allowed = {item.get("name") for item in tools if isinstance(item, dict)}
+        allowed = {item.get("name") for item in tools if isinstance(item, dict) and item.get("access") == "read"}
         if len(set(names)) != len(names) or any(name not in allowed for name in names):
             raise HTTPException(status_code=422, detail="La sélection doit contenir uniquement des outils découverts, sans doublon.")
         self.database.set_mcp_server_approved_tools(user_id, server_id, names)

@@ -475,9 +475,16 @@ class Database:
 
     def update_mcp_server_tools(self, user_id: str, server_id: str, tools: list[dict[str, object]], status: str = "ready", error: str | None = None) -> bool:
         with self.connection() as connection:
+            existing = connection.execute(
+                "SELECT approved_tools_json FROM mcp_servers WHERE user_id = ? AND id = ?", (user_id, server_id),
+            ).fetchone()
+            if existing is None:
+                return False
+            safe_names = {item.get("name") for item in tools if item.get("access") == "read"}
+            approved = [name for name in json.loads(existing["approved_tools_json"]) if name in safe_names]
             cursor = connection.execute(
-                "UPDATE mcp_servers SET discovered_tools_json = ?, status = ?, last_checked_at = ?, last_error = ?, updated_at = ? WHERE user_id = ? AND id = ?",
-                (json.dumps(tools), status, utc_now(), error, utc_now(), user_id, server_id),
+                "UPDATE mcp_servers SET discovered_tools_json = ?, approved_tools_json = ?, status = ?, last_checked_at = ?, last_error = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (json.dumps(tools), json.dumps(approved), status, utc_now(), error, utc_now(), user_id, server_id),
             )
         return cursor.rowcount == 1
 
@@ -491,6 +498,10 @@ class Database:
 
     def delete_mcp_server(self, user_id: str, server_id: str) -> bool:
         with self.connection() as connection:
+            connection.execute(
+                "DELETE FROM conversation_connectors WHERE user_id = ? AND connector_id = ?",
+                (user_id, f"mcp:{server_id}"),
+            )
             cursor = connection.execute("DELETE FROM mcp_servers WHERE user_id = ? AND id = ?", (user_id, server_id))
         return cursor.rowcount == 1
 
