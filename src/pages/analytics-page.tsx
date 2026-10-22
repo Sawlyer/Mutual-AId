@@ -1,19 +1,42 @@
-import { ActivityChart } from '@/features/dashboard/activity-chart'
-import { RecentActivity } from '@/features/dashboard/recent-activity'
+import { useEffect, useState } from 'react'
+import { Activity, Bot, CircleAlert, LoaderCircle, MessagesSquare, Workflow } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
-import { ArrowUpRight, CheckCircle2, Gauge, Workflow } from 'lucide-react'
+import { analyticsService, type AnalyticsSummary } from '@/services/analytics-service'
 
-const stats = [
-  { label: 'Missions exécutées', value: '642', delta: '+8,2 %', icon: Workflow },
-  { label: 'Tâches terminées', value: '4 812', delta: '+12,8 %', icon: CheckCircle2 },
-  { label: 'Temps moyen', value: '2 min 18 s', delta: '−6,4 %', icon: Gauge },
-]
+const statusLabels: Record<string, string> = {
+  pending: 'En attente', ready: 'Prête', running: 'En cours', awaiting_approval: 'Approbation requise',
+  validating: 'Validation', completed: 'Terminée', failed: 'Échec', blocked: 'Bloquée', paused: 'En pause', interrupted: 'Interrompue', cancelled: 'Annulée',
+}
 
 export function AnalyticsPage() {
-  return <div className="space-y-6">
-    <div><p className="text-sm text-muted-foreground">Vue d’ensemble</p><h2 className="mt-1 font-heading text-2xl font-semibold tracking-tight">Analytics</h2><p className="mt-1 text-sm text-muted-foreground">Les indicateurs de votre orchestration, en un seul endroit.</p></div>
-    <section className="grid gap-3 sm:grid-cols-3" aria-label="Indicateurs d’activité">{stats.map(({ label, value, delta, icon: Icon }) => <Card key={label}><CardContent className="p-4"><div className="flex items-center justify-between"><span className="text-xs font-medium text-muted-foreground">{label}</span><Icon aria-hidden="true" className="size-4 text-muted-foreground" /></div><div className="mt-3 flex items-end justify-between"><span className="font-heading text-2xl font-semibold tracking-tight">{value}</span><span className="inline-flex items-center gap-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300"><ArrowUpRight aria-hidden="true" className="size-3" />{delta}</span></div></CardContent></Card>)}</section>
-    <section className="grid gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(300px,1fr)]"><ActivityChart /><RecentActivity /></section>
-    <Card><CardContent className="p-5"><p className="text-sm font-medium">Période de référence</p><p className="mt-1 text-xs text-muted-foreground">Indicateurs simulés pour les 30 derniers jours. Les données détaillées seront connectées au backend dans une prochaine étape.</p></CardContent></Card>
+  const [metrics, setMetrics] = useState<AnalyticsSummary | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    void analyticsService.get().then((result) => { if (active) setMetrics(result) })
+      .catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Les statistiques sont indisponibles.') })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [])
+
+  const stats = metrics ? [
+    { label: 'Conversations', value: metrics.conversations, icon: MessagesSquare },
+    { label: 'Exécutions', value: metrics.executions, icon: Workflow },
+    { label: 'Exécutions actives', value: metrics.active_executions, icon: Activity },
+    { label: 'Tâches terminées', value: `${metrics.completed_tasks} / ${metrics.tasks}`, icon: Bot },
+  ] : []
+  const maxStatus = Math.max(1, ...Object.values(metrics?.task_statuses ?? {}))
+  return <div className="mx-auto max-w-4xl space-y-6">
+    <header><p className="text-sm text-muted-foreground">Mesure d’activité</p><h2 className="mt-1 font-heading text-2xl font-semibold tracking-tight">Analytics</h2><p className="mt-1 text-sm text-muted-foreground">Statistiques calculées depuis les conversations et tâches de votre compte.</p></header>
+    {loading && <div role="status" className="flex items-center gap-2 py-10 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Calcul des indicateurs…</div>}
+    {!loading && error && <p role="alert" className="flex items-center gap-2 rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive"><CircleAlert className="size-4" />{error}</p>}
+    {!loading && !error && metrics && <>
+      <section aria-label="Indicateurs principaux" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{stats.map(({ label, value, icon: Icon }) => <Card key={label}><CardContent className="flex items-center gap-3 p-4"><span className="grid size-9 place-items-center rounded-lg bg-primary/10 text-primary"><Icon className="size-4" /></span><div><p className="text-xs text-muted-foreground">{label}</p><p className="mt-0.5 text-xl font-semibold tabular-nums">{value}</p></div></CardContent></Card>)}</section>
+      <Card><CardContent className="space-y-5 p-5"><div><h2 className="font-semibold">Répartition des tâches</h2><p className="mt-1 text-sm text-muted-foreground">État courant des {metrics.tasks} tâches persistées.</p></div>
+        {metrics.tasks === 0 ? <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Aucune tâche enregistrée. Les indicateurs apparaîtront après votre première orchestration.</p> : <div className="space-y-3">{Object.entries(metrics.task_statuses).sort(([left], [right]) => left.localeCompare(right)).map(([status, count]) => <div key={status} className="grid grid-cols-[130px_minmax(0,1fr)_36px] items-center gap-3 text-sm"><span className="truncate text-muted-foreground">{statusLabels[status] ?? status}</span><div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${count / maxStatus * 100}%` }} /></div><span className="text-right tabular-nums">{count}</span></div>)}</div>}
+      </CardContent></Card>
+      <p className="text-xs text-muted-foreground">Le taux de complétion global est de {metrics.task_completion_percent} %. Les statistiques reflètent uniquement votre compte.</p>
+    </>}
   </div>
 }

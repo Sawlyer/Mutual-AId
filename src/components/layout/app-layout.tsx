@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Outlet, useLocation } from 'react-router'
+import { Navigate, Outlet, useLocation } from 'react-router'
 import { motion, useReducedMotion } from 'motion/react'
 import {
   Dialog,
@@ -8,7 +8,11 @@ import {
 } from '@/components/ui/dialog'
 import { AppHeader } from '@/components/layout/app-header'
 import { Sidebar } from '@/components/layout/sidebar'
+import { RouteFallback } from '@/components/layout/route-fallback'
 import { useAppStore } from '@/stores/use-app-store'
+import { chatAdapter } from '@/services/chat-adapters'
+import { useOpenAIChatStore } from '@/stores/use-openai-chat-store'
+import { useAuthStore } from '@/stores/use-auth-store'
 
 export function AppLayout() {
   const location = useLocation()
@@ -16,15 +20,33 @@ export function AppLayout() {
   const theme = useAppStore((state) => state.theme)
   const mobileNavOpen = useAppStore((state) => state.mobileNavOpen)
   const setMobileNavOpen = useAppStore((state) => state.setMobileNavOpen)
+  const user = useAuthStore((state) => state.user)
+  const authReady = useAuthStore((state) => state.ready)
+  const restore = useAuthStore((state) => state.restore)
+
+  useEffect(() => { if (!authReady) void restore() }, [authReady, restore])
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')
     document.documentElement.style.colorScheme = theme
   }, [theme])
 
+  useEffect(() => {
+    if (!authReady || !user) return
+    if (chatAdapter.mode !== 'openai') return
+    useOpenAIChatStore.getState().clearAccountData()
+    useOpenAIChatStore.getState().setLoading(true)
+    void chatAdapter.listConversations()
+      .then((conversations) => useOpenAIChatStore.getState().setConversations(conversations))
+      .catch((error: unknown) => useOpenAIChatStore.getState().setLoadError(error instanceof Error ? error.message : 'Le backend est indisponible.'))
+  }, [authReady, user, restore])
+
+  if (!authReady) return <RouteFallback />
+  if (!user) return <Navigate to="/login" state={{ from: location }} replace />
+
   return (
     <div className="min-h-svh bg-background">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-[252px] border-r border-sidebar-border bg-sidebar md:flex">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden h-svh w-[252px] overflow-hidden border-r border-sidebar-border bg-sidebar md:flex">
         <Sidebar />
       </aside>
 

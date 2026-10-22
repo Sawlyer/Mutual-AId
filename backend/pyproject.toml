@@ -1,0 +1,29 @@
+[project]
+name = "mutual-aid-backend"
+version = "0.1.0"
+description = "FastAPI backend for the Mutual-AId conversational assistant"
+requires-python = ">=3.10"
+dependencies = [
+  "aiosqlite>=0.21.0",
+  "cryptography>=50.0.2",
+  "fastapi>=0.134.0",
+  "httpx>=0.28.1",
+  "openai-agents>=0.16.0",
+  "pwdlib[argon2]>=0.2.0",
+  "pydantic-settings>=2.8.0",
+  "uvicorn[standard]>=0.34.0",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28.0",
+  "pytest>=8.3.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

@@ -10,9 +10,15 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+.playwright-cli/
 *.local
 .env*
 !.env.example
+backend/.venv/
+backend/data/
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
 # Editor directories and files
 .vscode/*
