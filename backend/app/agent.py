@@ -35,6 +35,7 @@ async def stream_assistant(
     user_content: str,
     settings: Settings,
     tools: Sequence[object] = (),
+    context: object | None = None,
 ) -> AsyncIterator[str]:
     """Stream only user-visible text deltas; omit reasoning and non-text SDK events."""
     agent = build_assistant(settings, tools) if tools else build_assistant(settings)
@@ -47,6 +48,7 @@ async def stream_assistant(
             session=session,
             max_turns=settings.max_agent_turns,
             run_config=RunConfig(tracing_disabled=True),
+            context=context,
         )
         async for event in result.stream_events():
             if event.type != "raw_response_event":

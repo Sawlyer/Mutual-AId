@@ -1,9 +1,9 @@
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import httpx
 from agents import RunContextWrapper, function_tool
 
+from app.connectors.context import ConnectorToolContext
 from app.connectors.google_oauth import CALENDAR_READ_SCOPE, GoogleOAuthClient, GoogleOAuthError
 from app.db import Database
 
@@ -68,12 +68,7 @@ async def fetch_calendar_events(
     return {"items": safe_events, "next_page_token": payload.get("nextPageToken")}
 
 
-@dataclass
-class CalendarToolContext:
-    user_id: str
-    database: Database
-    oauth: GoogleOAuthClient
-    http_client: httpx.AsyncClient | None = None
+CalendarToolContext = ConnectorToolContext
 
 
 @function_tool(
@@ -85,6 +80,8 @@ async def calendar_list_events(
     ctx: RunContextWrapper[CalendarToolContext], time_min: str, time_max: str
 ) -> dict[str, object]:
     """List events between two RFC3339 timestamps, with a maximum range of 90 days."""
+    if ctx.context.google_oauth is None:
+        raise GoogleCalendarError("Google OAuth is unavailable")
     return await fetch_calendar_events(
-        ctx.context.user_id, ctx.context.database, ctx.context.oauth, time_min, time_max, ctx.context.http_client
+        ctx.context.user_id, ctx.context.database, ctx.context.google_oauth, time_min, time_max, ctx.context.http_client
     )

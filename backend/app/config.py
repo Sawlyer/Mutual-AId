@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     google_oauth_client_id: str | None = None
     google_oauth_client_secret: SecretStr | None = None
     google_oauth_redirect_uri: str | None = None
+    github_app_client_id: str | None = None
+    github_app_client_secret: SecretStr | None = None
+    github_app_redirect_uri: str | None = None
     connector_token_encryption_key: SecretStr | None = None
 
     @property
@@ -55,3 +58,8 @@ class Settings(BaseSettings):
     def google_calendar_configured(self) -> bool:
         """Backward-compatible name for the shared Google OAuth configuration."""
         return self.google_oauth_configured
+
+    @property
+    def github_app_configured(self) -> bool:
+        client_secret = self.github_app_client_secret.get_secret_value().strip() if self.github_app_client_secret else ""
+        return bool(self.github_app_client_id and self.github_app_client_id.strip() and client_secret and self.github_app_redirect_uri and self.github_app_redirect_uri.strip() and self.connector_token_key)

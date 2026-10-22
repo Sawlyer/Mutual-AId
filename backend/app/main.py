@@ -23,7 +23,12 @@ from app.planning.service import Planner, PlanningUnavailable
 from app.connectors.registry import ConnectorRegistry
 from app.connectors.tools import ConnectorAuthorizationError, ToolRegistry
 from app.connectors.google_calendar import calendar_list_events
-from app.connectors.google_oauth import CALENDAR_READ_SCOPE, GOOGLE_CONNECTOR_SCOPES, GoogleOAuthClient, GoogleOAuthNotConfigured, InvalidOAuthState
+from app.connectors.google_drive import drive_search_files
+from app.connectors.google_gmail import gmail_search_messages
+from app.connectors.google_oauth import CALENDAR_READ_SCOPE, DRIVE_METADATA_READ_SCOPE, GOOGLE_CONNECTOR_SCOPES, GMAIL_READ_SCOPE, GoogleOAuthClient, GoogleOAuthNotConfigured, InvalidOAuthState
+from app.connectors.github_api import github_list_issues, github_list_repositories
+from app.connectors.github_oauth import GITHUB_READ_PERMISSIONS, GitHubAppOAuthClient, GitHubOAuthNotConfigured
+from app.connectors.context import ConnectorToolContext
 from app.connectors.oauth import OAuthStateStore, TokenVault
 from app.config import Settings
 from app.db import Database
@@ -399,7 +404,10 @@ async def send_message_stream(
                 return
             answer_parts: list[str] = []
             try:
-                async for delta in stream_assistant(conversation_id, payload.content.strip(), settings, available_tools):
+                tool_context = ConnectorToolContext(
+                    user.id, database, request.app.state.google_oauth, request.app.state.github_oauth
+                ) if available_tools else None
+                async for delta in stream_assistant(conversation_id, payload.content.strip(), settings, available_tools, tool_context):
                     if await request.is_disconnected():
                         raise asyncio.CancelledError
                     answer_parts.append(delta)
@@ -451,6 +459,14 @@ async def list_connectors(request: Request, database: Db, user: CurrentUser) -> 
 
 @router.post("/connectors/{connector_id}/connect", dependencies=[Depends(rate_limit), TrustedOrigin], summary="Démarrer OAuth Google")
 async def connect_google_connector(connector_id: str, request: Request, user: CurrentUser) -> dict[str, str]:
+    if connector_id == "github":
+        github_oauth: GitHubAppOAuthClient | None = request.app.state.github_oauth
+        if github_oauth is None:
+            raise HTTPException(status_code=503, detail="GitHub App OAuth n’est pas configuré sur le backend.")
+        try:
+            return {"authorization_url": github_oauth.authorization_url(user.id)}
+        except GitHubOAuthNotConfigured as error:
+            raise HTTPException(status_code=503, detail="GitHub App OAuth n’est pas configuré sur le backend.") from error
     scopes = GOOGLE_CONNECTOR_SCOPES.get(connector_id)
     if scopes is None:
         raise HTTPException(status_code=404, detail="Ce connecteur OAuth est inconnu.")
@@ -492,9 +508,36 @@ async def google_calendar_callback(request: Request, database: Db, settings: App
                             headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
 
+@router.get("/connectors/github/callback", summary="Terminer OAuth GitHub")
+async def github_callback(request: Request, database: Db, settings: AppSettings) -> RedirectResponse:
+    token = request.cookies.get(settings.auth_cookie_name)
+    user = database.get_user_for_session(token_digest(token)) if token else None
+    origin = settings.allowed_origins[0].rstrip("/")
+    headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+    if user is None:
+        return RedirectResponse(f"{origin}/connectors?oauth_error=session", status_code=303, headers=headers)
+    oauth: GitHubAppOAuthClient | None = request.app.state.github_oauth
+    if oauth is None:
+        return RedirectResponse(f"{origin}/connectors?oauth_error=unavailable", status_code=303, headers=headers)
+    if request.query_params.get("error"):
+        return RedirectResponse(f"{origin}/connectors?oauth_error=denied", status_code=303, headers=headers)
+    try:
+        await oauth.exchange_code(user.id, request.query_params.get("code", ""), request.query_params.get("state", ""))
+    except Exception:
+        logger.exception("GitHub OAuth callback failed for user %s", user.id)
+        return RedirectResponse(f"{origin}/connectors?oauth_error=exchange", status_code=303, headers=headers)
+    return RedirectResponse(f"{origin}/connectors?connected=github", status_code=303, headers=headers)
+
+
 @router.post("/connectors/{connector_id}/disconnect", status_code=204,
              dependencies=[Depends(rate_limit), TrustedOrigin], summary="Déconnecter un connecteur Google")
 async def disconnect_google_connector(connector_id: str, request: Request, user: CurrentUser) -> Response:
+    if connector_id == "github":
+        github_oauth: GitHubAppOAuthClient | None = request.app.state.github_oauth
+        if github_oauth is None:
+            raise HTTPException(status_code=503, detail="GitHub App OAuth n’est pas configuré sur le backend.")
+        await github_oauth.revoke(user.id)
+        return Response(status_code=204)
     if connector_id not in GOOGLE_CONNECTOR_SCOPES:
         raise HTTPException(status_code=404, detail="Ce connecteur OAuth est inconnu.")
     oauth: GoogleOAuthClient | None = request.app.state.google_oauth
@@ -576,6 +619,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.settings = app_settings
     application.state.database = database
+    github_oauth: GitHubAppOAuthClient | None = None
+    if app_settings.github_app_configured:
+        try:
+            github_oauth = GitHubAppOAuthClient(app_settings, database, TokenVault(app_settings.connector_token_key or ""), OAuthStateStore(database))
+        except ValueError:
+            logger.error("GitHub connector disabled because token encryption key is invalid")
     google_oauth: GoogleOAuthClient | None = None
     if app_settings.google_oauth_configured:
         try:
@@ -584,24 +633,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError:
             logger.error("Google connectors disabled because token encryption key is invalid")
     connector_registry = ConnectorRegistry(
-        available_connector_ids=set(GOOGLE_CONNECTOR_SCOPES) if google_oauth else set(),
-        setup_required_connector_ids=set() if google_oauth else set(GOOGLE_CONNECTOR_SCOPES),
+        available_connector_ids=(set(GOOGLE_CONNECTOR_SCOPES) if google_oauth else set()) | ({"github"} if github_oauth else set()),
+        setup_required_connector_ids=(set() if google_oauth else set(GOOGLE_CONNECTOR_SCOPES)) | (set() if github_oauth else {"github"}),
     )
     application.state.connector_registry = connector_registry
     application.state.tool_registry = ToolRegistry(connector_registry)
     application.state.google_oauth = google_oauth
+    application.state.github_oauth = github_oauth
     if google_oauth:
+        application.state.tool_registry.register(
+            "gmail", "gmail_search_messages", gmail_search_messages,
+            access="read", required_scopes=[GMAIL_READ_SCOPE],
+            description="Rechercher des e-mails et renvoyer leur expéditeur, sujet, date et extrait.",
+        )
+        application.state.tool_registry.register(
+            "google_drive", "drive_search_files", drive_search_files,
+            access="read", required_scopes=[DRIVE_METADATA_READ_SCOPE],
+            description="Rechercher des fichiers Drive et renvoyer leurs métadonnées sans lire leur contenu.",
+        )
         application.state.tool_registry.register(
             "google_calendar", "calendar_list_events", calendar_list_events,
             access="read", required_scopes=[CALENDAR_READ_SCOPE],
             description="Lire les événements Google Calendar sur une période définie.",
+        )
+    if github_oauth:
+        application.state.tool_registry.register(
+            "github", "github_list_repositories", github_list_repositories,
+            access="read", required_scopes=GITHUB_READ_PERMISSIONS,
+            description="Lister les dépôts accessibles au compte GitHub connecté.",
+        )
+        application.state.tool_registry.register(
+            "github", "github_list_issues", github_list_issues,
+            access="read", required_scopes=GITHUB_READ_PERMISSIONS,
+            description="Lire les issues d’un dépôt autorisé sur GitHub.",
         )
     profiles = AgentService(database)
     application.state.agent_service = profiles
     application.state.execution_repository = ExecutionRepository(database)
     application.state.execution_coordinator = ExecutionCoordinator(
         application.state.execution_repository, profiles, app_settings, database,
-        application.state.tool_registry, google_oauth,
+        application.state.tool_registry, google_oauth, github_oauth,
     )
     application.state.request_router = RequestRouter(Planner(app_settings), profiles)
     application.state.rate_limiter = RequestLimiter(app_settings.requests_per_minute)

@@ -10,7 +10,6 @@ from app.connectors.base import (
 
 
 _READ = ToolAccess.READ
-_WRITE = ToolAccess.WRITE
 _GOOGLE_MAIL = "https://www.googleapis.com/auth/gmail.readonly"
 _GOOGLE_DRIVE = "https://www.googleapis.com/auth/drive.readonly"
 _GOOGLE_CALENDAR = "https://www.googleapis.com/auth/calendar.readonly"
@@ -30,7 +29,7 @@ class ConnectorRegistry:
         definitions = (
                 Connector(
                     id="gmail", name="Gmail", icon="mail",
-                    description="Consulter et organiser les e-mails de votre compte.",
+                    description="Rechercher et consulter les e-mails de votre compte.",
                     capabilities=("Rechercher des e-mails", "Lire les messages"),
                     available_tools=(), availability="coming_soon", auth_provider=auth_provider,
                     required_scopes=_permissions(
@@ -56,11 +55,12 @@ class ConnectorRegistry:
                 Connector(
                     id="github", name="GitHub", icon="github",
                     description="Consulter des dépôts, issues et demandes de fusion.",
-                    capabilities=("Lire des dépôts", "Consulter les issues", "Créer des pull requests"),
+                    capabilities=("Consulter les dépôts", "Lire le contenu autorisé", "Consulter les issues"),
                     available_tools=(), availability="coming_soon", auth_provider=auth_provider,
                     required_scopes=_permissions(
-                        ConnectorPermission("github.read", "Lecture des dépôts", "Consulter les dépôts autorisés.", _READ),
-                        ConnectorPermission("github.write", "Écriture GitHub", "Créer des issues ou pull requests après validation.", _WRITE),
+                        ConnectorPermission("metadata.read", "Métadonnées des dépôts", "Lister les dépôts accessibles.", _READ),
+                        ConnectorPermission("contents.read", "Contenu des dépôts", "Consulter les contenus autorisés.", _READ),
+                        ConnectorPermission("issues.read", "Lecture des issues", "Consulter les issues existantes.", _READ),
                     ),
                 ),
                 Connector(

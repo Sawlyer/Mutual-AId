@@ -5,8 +5,9 @@ from agents import Agent, RunConfig, Runner
 
 from app.agents.service import AgentService
 from app.config import Settings
-from app.connectors.google_calendar import CalendarToolContext
+from app.connectors.context import ConnectorToolContext
 from app.connectors.google_oauth import GoogleOAuthClient
+from app.connectors.github_oauth import GitHubAppOAuthClient
 from app.connectors.tools import ConnectorAuthorizationError, ToolRegistry
 from app.db import Database
 from app.executions.models import ExecutionRead, TaskRead
@@ -20,7 +21,8 @@ class AgentTaskExecutor:
     """Run isolated agent tasks without granting arbitrary executable tools."""
 
     def __init__(self, settings: Settings, repository: ExecutionRepository, user_id: str, execution_id: str,
-                 database: Database, tool_registry: ToolRegistry, google_oauth: GoogleOAuthClient | None):
+                 database: Database, tool_registry: ToolRegistry, google_oauth: GoogleOAuthClient | None,
+                 github_oauth: GitHubAppOAuthClient | None = None):
         self.settings = settings
         self.repository = repository
         self.user_id = user_id
@@ -28,6 +30,7 @@ class AgentTaskExecutor:
         self.database = database
         self.tool_registry = tool_registry
         self.google_oauth = google_oauth
+        self.github_oauth = github_oauth
 
     async def __call__(self, task: TaskRead) -> str:
         if not self.settings.openai_configured:
@@ -43,9 +46,11 @@ class AgentTaskExecutor:
             tools = self.tool_registry.tools_for_user(self.user_id, task.connector_ids, self.database)
         except ConnectorAuthorizationError as error:
             raise RuntimeError("A required connector is no longer authorized") from error
-        if task.connector_ids and self.google_oauth is None:
+        if any(connector_id in {"gmail", "google_drive", "google_calendar"} for connector_id in task.connector_ids) and self.google_oauth is None:
             raise RuntimeError("Connector provider is unavailable")
-        context = CalendarToolContext(self.user_id, self.database, self.google_oauth) if task.connector_ids else None
+        if "github" in task.connector_ids and self.github_oauth is None:
+            raise RuntimeError("Connector provider is unavailable")
+        context = ConnectorToolContext(self.user_id, self.database, self.google_oauth, self.github_oauth) if task.connector_ids else None
         agent = Agent(
             name=str(snapshot.get("name") or "Assistant"), instructions=instructions,
             model=self.settings.openai_model.strip(), tools=tools,
@@ -65,13 +70,15 @@ class AgentTaskExecutor:
 
 class ExecutionCoordinator:
     def __init__(self, repository: ExecutionRepository, agent_service: AgentService, settings: Settings,
-                 database: Database, tool_registry: ToolRegistry, google_oauth: GoogleOAuthClient | None):
+                 database: Database, tool_registry: ToolRegistry, google_oauth: GoogleOAuthClient | None,
+                 github_oauth: GitHubAppOAuthClient | None = None):
         self.repository = repository
         self.agent_service = agent_service
         self.settings = settings
         self.database = database
         self.tool_registry = tool_registry
         self.google_oauth = google_oauth
+        self.github_oauth = github_oauth
         self._background: dict[str, asyncio.Task[None]] = {}
         self._cancel: dict[str, asyncio.Event] = {}
         self._user_semaphores: dict[str, asyncio.Semaphore] = {}
@@ -98,7 +105,7 @@ class ExecutionCoordinator:
         if execution is None:
             return
         handler = AgentTaskExecutor(self.settings, self.repository, user_id, execution_id,
-                                    self.database, self.tool_registry, self.google_oauth)
+                                    self.database, self.tool_registry, self.google_oauth, self.github_oauth)
         user_semaphore = self._user_semaphores.setdefault(user_id, asyncio.Semaphore(self.settings.max_parallel_tasks))
 
         async def execute_with_user_limit(task: TaskRead) -> str:

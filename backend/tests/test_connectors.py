@@ -29,7 +29,7 @@ def test_catalog_lists_only_disconnected_connectors_without_tools(tmp_path):
     assert all(connector["status"] == "disconnected" for connector in connectors.values())
     assert connectors["google_calendar"]["availability"] == "setup_required"
     assert all(connectors[connector_id]["availability"] == "setup_required" for connector_id in ("gmail", "google_drive", "google_calendar"))
-    assert connectors["github"]["availability"] == "coming_soon"
+    assert connectors["github"]["availability"] == "setup_required"
     assert connectors["custom_mcp"]["availability"] == "coming_soon"
     assert all(connector["available_tools"] == [] for connector in connectors.values())
 
@@ -266,6 +266,220 @@ def test_google_disconnect_revokes_provider_grant_only_after_last_google_connect
     assert len(revoke_calls) == 1
     assert database.get_connector_connection("user-a", "gmail")["status"] == "disconnected"
     assert database.get_connector_credentials("user-a", "google_calendar") is None
+
+
+def test_gmail_search_returns_limited_message_metadata_for_connected_user(tmp_path):
+    import asyncio
+    import httpx
+    from app.connectors.google_gmail import fetch_gmail_messages
+    from app.connectors.google_oauth import GMAIL_READ_SCOPE
+    database = Database(tmp_path / "gmail-read.sqlite3")
+    database.initialize()
+    database.set_connector_connection("user-a", "gmail", "connected", [GMAIL_READ_SCOPE])
+
+    class FakeOAuth:
+        async def access_token(self, user_id, connector_id):
+            assert (user_id, connector_id) == ("user-a", "gmail")
+            return "gmail-token"
+
+    def respond(request):
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(200, json={"messages": [{"id": "m-1", "threadId": "t-1"}]})
+        return httpx.Response(200, json={
+            "id": "m-1", "threadId": "t-1", "snippet": "Résumé du message", "payload": {"headers": [
+                {"name": "From", "value": "contact@example.test"}, {"name": "Subject", "value": "Bonjour"},
+            ]}, "internalDate": "1792670400000", "body": "must not leak",
+        })
+
+    async def search():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await fetch_gmail_messages("user-a", database, FakeOAuth(), "from:contact@example.test", client)
+
+    result = asyncio.run(search())
+    assert result["messages"] == [{
+        "id": "m-1", "thread_id": "t-1", "from": "contact@example.test", "subject": "Bonjour",
+        "snippet": "Résumé du message", "date": "1792670400000",
+    }]
+    assert "must not leak" not in str(result)
+
+
+def test_drive_search_refuses_metadata_access_without_matching_scope(tmp_path):
+    import asyncio
+    import httpx
+    from app.connectors.google_drive import fetch_drive_files
+    database = Database(tmp_path / "drive-read.sqlite3")
+    database.initialize()
+    database.set_connector_connection("user-a", "google_drive", "connected", [])
+
+    class FakeOAuth:
+        async def access_token(self, *_args):
+            raise AssertionError("Missing Drive scope must be rejected before token access")
+
+    async def search():
+        async with httpx.AsyncClient() as client:
+            return await fetch_drive_files("user-a", database, FakeOAuth(), "report", client)
+
+    try:
+        asyncio.run(search())
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError("Drive metadata must require the granted read-only scope")
+
+
+def test_drive_search_returns_only_metadata(tmp_path):
+    import asyncio
+    import httpx
+    from app.connectors.google_drive import fetch_drive_files
+    from app.connectors.google_oauth import DRIVE_METADATA_READ_SCOPE
+    database = Database(tmp_path / "drive-metadata.sqlite3")
+    database.initialize()
+    database.set_connector_connection("user-a", "google_drive", "connected", [DRIVE_METADATA_READ_SCOPE])
+
+    class FakeOAuth:
+        async def access_token(self, user_id, connector_id):
+            assert (user_id, connector_id) == ("user-a", "google_drive")
+            return "drive-token"
+
+    def respond(request):
+        assert request.headers["Authorization"] == "Bearer drive-token"
+        assert "name contains 'report'" in request.url.params["q"]
+        return httpx.Response(200, json={"files": [{
+            "id": "f-1", "name": "report.csv", "mimeType": "text/csv", "modifiedTime": "2026-10-20T09:00:00Z",
+            "webViewLink": "https://drive.google.com/file/d/f-1", "content": "must not be returned",
+        }]})
+
+    async def search():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await fetch_drive_files("user-a", database, FakeOAuth(), "report", client)
+
+    result = asyncio.run(search())
+    assert result["files"][0]["name"] == "report.csv"
+    assert "content" not in str(result)
+
+
+def test_github_issues_are_read_only_and_user_scoped(tmp_path):
+    import asyncio
+    import httpx
+    from app.connectors.github_api import GitHubApiError, fetch_github_issues
+    from app.connectors.github_oauth import GITHUB_READ_PERMISSIONS
+    database = Database(tmp_path / "github-api.sqlite3")
+    database.initialize()
+    database.set_connector_connection("user-a", "github", "connected", list(GITHUB_READ_PERMISSIONS))
+
+    class FakeOAuth:
+        async def access_token(self, user_id):
+            assert user_id == "user-a"
+            return "github-token"
+
+    def respond(request):
+        assert request.method == "GET"
+        assert request.url.path == "/repos/acme/platform/issues"
+        assert request.headers["Authorization"] == "Bearer github-token"
+        return httpx.Response(200, json=[
+            {"number": 3, "title": "Bug", "state": "open", "body": "Details", "html_url": "https://github.com/acme/platform/issues/3"},
+            {"number": 2, "title": "Pull request", "pull_request": {"url": "ignored"}},
+        ])
+
+    async def read():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await fetch_github_issues("user-a", database, FakeOAuth(), "acme", "platform", client)
+
+    result = asyncio.run(read())
+    assert len(result["issues"]) == 1
+    assert result["issues"][0]["title"] == "Bug"
+    try:
+        asyncio.run(fetch_github_issues("user-b", database, FakeOAuth(), "acme", "platform"))
+    except GitHubApiError as error:
+        assert "permission" in str(error).lower()
+    else:
+        raise AssertionError("A different account must not read the connected user's GitHub issues")
+
+
+def test_github_app_oauth_uses_one_time_state_and_stores_token_encrypted(tmp_path):
+    import asyncio
+    from urllib.parse import parse_qs, urlparse
+    import httpx
+    from cryptography.fernet import Fernet
+    from app.connectors.github_oauth import GITHUB_READ_PERMISSIONS, GitHubAppOAuthClient
+    from app.connectors.oauth import OAuthStateStore, TokenVault
+    database = Database(tmp_path / "github-oauth.sqlite3")
+    database.initialize()
+    settings = Settings(
+        database_path=tmp_path / "github-oauth.sqlite3", openai_api_key="", openai_model="",
+        github_app_client_id="github-client", github_app_client_secret="github-secret",
+        github_app_redirect_uri="http://localhost:8000/api/connectors/github/callback",
+        connector_token_encryption_key=Fernet.generate_key().decode(),
+    )
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={
+        "access_token": "github-access-secret", "expires_in": 28800,
+        "refresh_token": "github-refresh-secret", "refresh_token_expires_in": 15897600,
+    }))
+
+    async def exchange():
+        async with httpx.AsyncClient(transport=transport) as client:
+            oauth = GitHubAppOAuthClient(settings, database, TokenVault(settings.connector_token_key), OAuthStateStore(database), client)
+            url = oauth.authorization_url("user-a")
+            state = parse_qs(urlparse(url).query)["state"][0]
+            return await oauth.exchange_code("user-a", "github-code", state)
+
+    result = asyncio.run(exchange())
+    encrypted = database.get_connector_credentials("user-a", "github")
+    assert result["status"] == "connected"
+    assert encrypted is not None
+    assert "github-access-secret" not in encrypted and "github-refresh-secret" not in encrypted
+    assert database.get_connector_connection("user-a", "github")["granted_scopes"] == list(GITHUB_READ_PERMISSIONS)
+
+
+def test_github_connect_endpoint_requires_session_and_returns_authorization_url(tmp_path):
+    from cryptography.fernet import Fernet
+    settings = Settings(
+        database_path=tmp_path / "github-connect.sqlite3", openai_api_key="", openai_model="",
+        github_app_client_id="github-client", github_app_client_secret="github-secret",
+        github_app_redirect_uri="http://localhost:8000/api/connectors/github/callback",
+        connector_token_encryption_key=Fernet.generate_key().decode(),
+    )
+    with TestClient(create_app(settings)) as client:
+        assert client.post("/api/connectors/github/connect").status_code == 401
+        client.post("/api/auth/register", json={
+            "name": "GitHub user", "email": "github@example.com", "password": "github integration test password",
+        })
+        connectors = {item["id"]: item for item in client.get("/api/connectors").json()}
+        response = client.post("/api/connectors/github/connect")
+    assert response.status_code == 200
+    assert connectors["github"]["availability"] == "available"
+    assert response.json()["authorization_url"].startswith("https://github.com/login/oauth/authorize?")
+
+
+def test_github_app_rotates_expired_user_access_tokens(tmp_path):
+    import asyncio
+    from urllib.parse import parse_qs, urlparse
+    import httpx
+    from cryptography.fernet import Fernet
+    from app.connectors.github_oauth import GitHubAppOAuthClient
+    from app.connectors.oauth import OAuthStateStore, TokenVault
+    database = Database(tmp_path / "github-refresh.sqlite3")
+    database.initialize()
+    settings = Settings(
+        database_path=tmp_path / "github-refresh.sqlite3", openai_api_key="", openai_model="",
+        github_app_client_id="github-client", github_app_client_secret="github-secret",
+        github_app_redirect_uri="http://localhost:8000/api/connectors/github/callback",
+        connector_token_encryption_key=Fernet.generate_key().decode(),
+    )
+
+    def respond(request):
+        if request.url.path.endswith("/login/oauth/access_token") and request.content.decode().find("grant_type=refresh_token") >= 0:
+            return httpx.Response(200, json={"access_token": "rotated-access", "refresh_token": "rotated-refresh", "expires_in": 28800, "refresh_token_expires_in": 15897600})
+        return httpx.Response(200, json={"access_token": "expired-access", "refresh_token": "initial-refresh", "expires_in": 1, "refresh_token_expires_in": 3600})
+
+    async def rotate():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            oauth = GitHubAppOAuthClient(settings, database, TokenVault(settings.connector_token_key), OAuthStateStore(database), client)
+            state = parse_qs(urlparse(oauth.authorization_url("user-a")).query)["state"][0]
+            await oauth.exchange_code("user-a", "code", state)
+            return await oauth.access_token("user-a")
+
+    assert asyncio.run(rotate()) == "rotated-access"
 
 
 def test_calendar_oauth_requires_client_and_encryption_configuration(tmp_path):
