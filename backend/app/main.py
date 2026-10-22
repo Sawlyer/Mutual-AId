@@ -14,7 +14,9 @@ from app.auth import create_session, hash_password, token_digest, verify_passwor
 
 from app.agent import configure_openai, stream_assistant
 from app.agents.models import AgentProfileCreate, AgentProfileRead, AgentProfileUpdate
-from app.agents.service import AgentService
+from app.agents.service import AgentService, InvalidSkillAssignment
+from app.agents.models import AgentSkillCreate, AgentSkillUpdate
+from app.agents.skills import AgentSkillRead
 from app.executions.coordinator import ExecutionCoordinator
 from app.executions.repository import ExecutionRepository
 from app.planning.router import RequestRouter
@@ -210,7 +212,10 @@ async def update_agent(profile_id: str, payload: AgentProfileUpdate, service: An
     supported = {capability.id for capability in service.capabilities()}
     if not set(changes.get("capability_ids", [])).issubset(supported):
         raise HTTPException(status_code=422, detail="Une compétence demandée n’est pas prise en charge.")
-    profile = service.update_profile(user.id, profile_id, payload)
+    try:
+        profile = service.update_profile(user.id, profile_id, payload)
+    except InvalidSkillAssignment as error:
+        raise HTTPException(status_code=422, detail="Une compétence de l’agent n’appartient pas à ce compte.") from error
     if profile is None:
         raise HTTPException(status_code=404, detail="Profil introuvable.")
     return profile
@@ -221,6 +226,75 @@ async def update_agent(profile_id: str, payload: AgentProfileUpdate, service: An
 async def delete_agent(profile_id: str, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> Response:
     if not service.delete_profile(user.id, profile_id):
         raise HTTPException(status_code=404, detail="Profil introuvable.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/agent-skills", response_model=list[AgentSkillRead], summary="Lister la bibliothèque de compétences")
+async def list_agent_skills(service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> list[AgentSkillRead]:
+    return service.list_skills(user.id)
+
+
+@router.post("/agent-skills", response_model=AgentSkillRead, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(rate_limit), TrustedOrigin], summary="Créer une compétence textuelle")
+async def create_agent_skill(payload: AgentSkillCreate, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> AgentSkillRead:
+    return service.create_skill(user.id, payload)
+
+
+@router.get("/agent-skills/{skill_id}", response_model=AgentSkillRead, summary="Consulter une compétence")
+async def get_agent_skill(skill_id: str, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> AgentSkillRead:
+    skill = service.get_skill(user.id, skill_id)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Compétence introuvable.")
+    return skill
+
+
+@router.patch("/agent-skills/{skill_id}", response_model=AgentSkillRead,
+              dependencies=[Depends(rate_limit), TrustedOrigin], summary="Modifier une compétence")
+async def update_agent_skill(skill_id: str, payload: AgentSkillUpdate, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> AgentSkillRead:
+    skill = service.update_skill(user.id, None, skill_id, payload)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Compétence introuvable.")
+    return skill
+
+
+@router.delete("/agent-skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT,
+               dependencies=[Depends(rate_limit), TrustedOrigin], summary="Supprimer une compétence")
+async def delete_agent_skill(skill_id: str, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> Response:
+    if not service.delete_skill(user.id, None, skill_id):
+        raise HTTPException(status_code=404, detail="Compétence introuvable.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/agents/{profile_id}/skills", response_model=list[AgentSkillRead], summary="Lister les compétences d’un agent")
+async def list_profile_skills(profile_id: str, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> list[AgentSkillRead]:
+    if service.get_profile(user.id, profile_id) is None:
+        raise HTTPException(status_code=404, detail="Profil introuvable.")
+    return service.list_skills(user.id, profile_id)
+
+
+@router.post("/agents/{profile_id}/skills", response_model=AgentSkillRead, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(rate_limit), TrustedOrigin], summary="Créer et affecter une compétence à un agent")
+async def create_profile_skill(profile_id: str, payload: AgentSkillCreate, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> AgentSkillRead:
+    try:
+        return service.create_skill(user.id, payload, profile_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Profil introuvable.") from error
+
+
+@router.patch("/agents/{profile_id}/skills/{skill_id}", response_model=AgentSkillRead,
+              dependencies=[Depends(rate_limit), TrustedOrigin], summary="Modifier une compétence affectée à un agent")
+async def update_profile_skill(profile_id: str, skill_id: str, payload: AgentSkillUpdate, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> AgentSkillRead:
+    skill = service.update_skill(user.id, profile_id, skill_id, payload)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Compétence introuvable pour cet agent.")
+    return skill
+
+
+@router.delete("/agents/{profile_id}/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT,
+               dependencies=[Depends(rate_limit), TrustedOrigin], summary="Désaffecter une compétence d’un agent")
+async def unassign_profile_skill(profile_id: str, skill_id: str, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> Response:
+    if not service.unassign_skill(user.id, profile_id, skill_id):
+        raise HTTPException(status_code=404, detail="Compétence introuvable pour cet agent.")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

@@ -138,3 +138,50 @@ def test_agent_api_crud_requires_owner_and_hides_foreign_profiles(tmp_path):
         assert client.get(f"/api/agents/{profile_id}").status_code == 404
         assert client.patch(f"/api/agents/{profile_id}", json={"name": "Stolen"}).status_code == 404
         assert client.delete(f"/api/agents/{profile_id}").status_code == 404
+
+
+def test_agent_skills_crud_assignment_limits_and_user_isolation(tmp_path):
+    from app.config import Settings
+    from app.main import create_app
+    from fastapi.testclient import TestClient
+
+    settings = Settings(database_path=tmp_path / "skills-api.sqlite3", openai_api_key="", openai_model="")
+    with TestClient(create_app(settings)) as owner:
+        owner.post("/api/auth/register", json={"name": "Owner", "email": "skill-owner@example.com", "password": "owner skill password long"})
+        profile = owner.post("/api/agents", json={
+            "name": "Coach", "domain": "wellness", "description": "Habitudes", "instructions": "Base." ,
+        }).json()
+        created = owner.post("/api/agent-skills", json={
+            "name": "Réponses concises", "description": "Synthétise les conseils.",
+            "instructions": "Réponds en trois points maximum.",
+        })
+        skill = created.json()
+        assignment = owner.patch(f"/api/agents/{profile['id']}", json={"skill_ids": [skill["id"]]})
+        assigned = owner.get(f"/api/agents/{profile['id']}/skills").json()
+        changed = owner.patch(f"/api/agent-skills/{skill['id']}", json={"enabled": False})
+        invalid = owner.post("/api/agent-skills", json={
+            "name": "Unsafe", "instructions": "   ",
+        })
+        oversized = owner.post("/api/agent-skills", json={
+            "name": "Large", "instructions": "x" * 4001,
+        })
+        deleted = owner.delete(f"/api/agent-skills/{skill['id']}")
+        after_delete = owner.get(f"/api/agents/{profile['id']}/skills").json()
+        assert assignment.status_code == 200
+
+    with TestClient(create_app(settings)) as other:
+        other.post("/api/auth/register", json={"name": "Other", "email": "skill-other@example.com", "password": "other skill password long"})
+        other_profile = other.post("/api/agents", json={
+            "name": "Other", "domain": "wellness", "description": "Other", "instructions": "Base.",
+        }).json()
+        assert other.patch(f"/api/agents/{other_profile['id']}", json={"skill_ids": [skill["id"]]}).status_code == 422
+        assert other.get(f"/api/agent-skills/{skill['id']}").status_code == 404
+
+    assert created.status_code == 201
+    assert "instructions" not in created.json() or created.json()["instructions"] == "Réponds en trois points maximum."
+    assert assigned[0]["id"] == skill["id"]
+    assert changed.json()["enabled"] is False
+    assert invalid.status_code == 422
+    assert oversized.status_code == 422
+    assert deleted.status_code == 204
+    assert after_delete == []

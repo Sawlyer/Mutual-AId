@@ -134,6 +134,26 @@ class Database:
                     ON agent_profiles(user_id, domain, enabled);
                 CREATE INDEX IF NOT EXISTS agent_profiles_user_enabled
                     ON agent_profiles(user_id, enabled);
+                CREATE TABLE IF NOT EXISTS agent_skills (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    instructions TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (user_id, id)
+                );
+                CREATE INDEX IF NOT EXISTS agent_skills_user_created ON agent_skills(user_id, created_at, id);
+                CREATE TABLE IF NOT EXISTS agent_profile_skills (
+                    user_id TEXT NOT NULL,
+                    profile_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE CASCADE,
+                    skill_id TEXT NOT NULL REFERENCES agent_skills(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, profile_id, skill_id)
+                );
+                CREATE INDEX IF NOT EXISTS agent_profile_skills_order ON agent_profile_skills(user_id, profile_id, created_at, skill_id);
                 CREATE TABLE IF NOT EXISTS auto_agent_capabilities (
                     user_id TEXT NOT NULL,
                     capability_id TEXT NOT NULL,
@@ -310,6 +330,103 @@ class Database:
     def delete_agent_profile(self, user_id: str, profile_id: str) -> bool:
         with self.connection() as connection:
             cursor = connection.execute("DELETE FROM agent_profiles WHERE user_id = ? AND id = ?", (user_id, profile_id))
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def _agent_skill(row: sqlite3.Row | None) -> dict[str, object] | None:
+        if row is None:
+            return None
+        skill = dict(row)
+        skill["enabled"] = bool(skill["enabled"])
+        return skill
+
+    def create_agent_skill(self, user_id: str, skill_id: str, skill_data: dict[str, object]) -> dict[str, object]:
+        timestamp = utc_now()
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO agent_skills (id, user_id, name, description, instructions, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (skill_id, user_id, skill_data["name"], skill_data.get("description", ""), skill_data["instructions"], int(bool(skill_data.get("enabled", True))), timestamp, timestamp),
+            )
+            row = connection.execute("SELECT * FROM agent_skills WHERE user_id = ? AND id = ?", (user_id, skill_id)).fetchone()
+        result = self._agent_skill(row)
+        assert result is not None
+        return result
+
+    def list_agent_skills(self, user_id: str, profile_id: str | None = None) -> list[dict[str, object]]:
+        with self.connection() as connection:
+            if profile_id is None:
+                rows = connection.execute("SELECT * FROM agent_skills WHERE user_id = ? ORDER BY created_at, id", (user_id,)).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT s.* FROM agent_skills s JOIN agent_profile_skills a
+                       ON a.skill_id = s.id AND a.user_id = s.user_id
+                       WHERE a.user_id = ? AND a.profile_id = ? ORDER BY a.created_at, s.id""",
+                    (user_id, profile_id),
+                ).fetchall()
+        return [skill for row in rows if (skill := self._agent_skill(row)) is not None]
+
+    def get_agent_skill(self, user_id: str, skill_id: str, profile_id: str | None = None) -> dict[str, object] | None:
+        with self.connection() as connection:
+            if profile_id is None:
+                row = connection.execute("SELECT * FROM agent_skills WHERE user_id = ? AND id = ?", (user_id, skill_id)).fetchone()
+            else:
+                row = connection.execute(
+                    """SELECT s.* FROM agent_skills s JOIN agent_profile_skills a
+                       ON a.skill_id = s.id AND a.user_id = s.user_id
+                       WHERE a.user_id = ? AND a.profile_id = ? AND a.skill_id = ?""",
+                    (user_id, profile_id, skill_id),
+                ).fetchone()
+        return self._agent_skill(row)
+
+    def update_agent_skill(self, user_id: str, skill_id: str, skill_data: dict[str, object]) -> dict[str, object] | None:
+        allowed = {"name", "description", "instructions", "enabled"}
+        changes = {key: value for key, value in skill_data.items() if key in allowed}
+        if not changes:
+            return self.get_agent_skill(user_id, skill_id)
+        assignments: list[str] = []
+        values: list[object] = []
+        for key, value in changes.items():
+            assignments.append(f"{key} = ?")
+            values.append(int(value) if key == "enabled" else value)
+        assignments.append("updated_at = ?")
+        values.extend((utc_now(), user_id, skill_id))
+        with self.connection() as connection:
+            connection.execute(f"UPDATE agent_skills SET {', '.join(assignments)} WHERE user_id = ? AND id = ?", values)
+        return self.get_agent_skill(user_id, skill_id)
+
+    def delete_agent_skill(self, user_id: str, skill_id: str) -> bool:
+        with self.connection() as connection:
+            cursor = connection.execute("DELETE FROM agent_skills WHERE user_id = ? AND id = ?", (user_id, skill_id))
+        return cursor.rowcount > 0
+
+    def set_agent_profile_skill_ids(self, user_id: str, profile_id: str, skill_ids: list[str]) -> bool:
+        if len(set(skill_ids)) != len(skill_ids):
+            return False
+        with self.connection() as connection:
+            profile = connection.execute("SELECT 1 FROM agent_profiles WHERE user_id = ? AND id = ?", (user_id, profile_id)).fetchone()
+            if profile is None:
+                return False
+            if skill_ids:
+                marks = ",".join("?" for _ in skill_ids)
+                rows = connection.execute(
+                    f"SELECT id FROM agent_skills WHERE user_id = ? AND id IN ({marks})",
+                    (user_id, *skill_ids),
+                ).fetchall()
+                if {row["id"] for row in rows} != set(skill_ids):
+                    return False
+            connection.execute("DELETE FROM agent_profile_skills WHERE user_id = ? AND profile_id = ?", (user_id, profile_id))
+            connection.executemany(
+                "INSERT INTO agent_profile_skills (user_id, profile_id, skill_id, created_at) VALUES (?, ?, ?, ?)",
+                [(user_id, profile_id, skill_id, utc_now()) for skill_id in skill_ids],
+            )
+        return True
+
+    def unassign_agent_skill(self, user_id: str, profile_id: str, skill_id: str) -> bool:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "DELETE FROM agent_profile_skills WHERE user_id = ? AND profile_id = ? AND skill_id = ?",
+                (user_id, profile_id, skill_id),
+            )
         return cursor.rowcount > 0
 
     def link_auto_agent_capability(self, user_id: str, capability_id: str, profile_id: str) -> None:
