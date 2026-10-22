@@ -23,8 +23,9 @@ def _permissions(*permissions: ConnectorPermission) -> tuple[ConnectorPermission
 class ConnectorRegistry:
     """Central catalog of supported connector definitions."""
 
-    def __init__(self, available_connector_ids: Iterable[str] = ()) -> None:
+    def __init__(self, available_connector_ids: Iterable[str] = (), setup_required_connector_ids: Iterable[str] = ()) -> None:
         available_ids = set(available_connector_ids)
+        setup_required_ids = set(setup_required_connector_ids) - available_ids
         auth_provider = UnavailableAuthProvider()
         definitions = (
                 Connector(
@@ -71,10 +72,13 @@ class ConnectorRegistry:
                     required_scopes=_permissions(ConnectorPermission("mcp.tools", "Outils du serveur", "Les outils disponibles dépendent du serveur MCP ajouté.", _READ)),
                 ),
             )
-        self._connectors = {
-            connector.id: replace(connector, availability="available") if connector.id in available_ids else connector
-            for connector in definitions
-        }
+        self._connectors = {}
+        for connector in definitions:
+            if connector.id in available_ids:
+                connector = replace(connector, availability="available")
+            elif connector.id in setup_required_ids:
+                connector = replace(connector, availability="setup_required")
+            self._connectors[connector.id] = connector
 
     def get(self, connector_id: str) -> Connector | None:
         return self._connectors.get(connector_id)

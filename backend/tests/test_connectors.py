@@ -22,13 +22,14 @@ def test_catalog_lists_only_disconnected_connectors_without_tools(tmp_path):
         response = client.get("/api/connectors")
 
     assert response.status_code == 200
-    connectors = response.json()
-    assert {connector["id"] for connector in connectors} == {
+    connectors = {connector["id"]: connector for connector in response.json()}
+    assert set(connectors) == {
         "gmail", "google_drive", "google_calendar", "github", "custom_mcp"
     }
-    assert all(connector["status"] == "disconnected" for connector in connectors)
-    assert all(connector["availability"] == "coming_soon" for connector in connectors)
-    assert all(connector["available_tools"] == [] for connector in connectors)
+    assert all(connector["status"] == "disconnected" for connector in connectors.values())
+    assert connectors["google_calendar"]["availability"] == "setup_required"
+    assert all(connector["availability"] == "coming_soon" for connector in connectors.values() if connector["id"] != "google_calendar")
+    assert all(connector["available_tools"] == [] for connector in connectors.values())
 
 
 def test_connector_preferences_are_scoped_to_conversation_and_survive_reads(tmp_path):
@@ -332,6 +333,12 @@ def test_calendar_oauth_is_exposed_only_when_server_configuration_is_complete(tm
     assert [item["name"] for item in connectors["google_calendar"]["available_tools"]] == []
     assert result.status_code == 200
     assert result.json()["authorization_url"].startswith("https://accounts.google.com/o/oauth2/v2/auth?")
+
+
+def test_registry_marks_calendar_setup_required_until_oauth_is_configured():
+    registry = ConnectorRegistry(setup_required_connector_ids={"google_calendar"})
+    assert registry.get("google_calendar").availability == "setup_required"
+    assert registry.get("gmail").availability == "coming_soon"
 
 
 def test_calendar_oauth_connect_and_disconnect_require_a_session(tmp_path):

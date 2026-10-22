@@ -67,7 +67,7 @@ Toutes les routes de conversation et de connecteur nécessitent une session. Les
 
 ## Connecteurs
 
-La page Connecteurs affiche Gmail, Google Drive, Google Calendar, GitHub et Custom MCP Server. Google Calendar devient disponible en lecture seule lorsque ses paramètres OAuth sont présents côté backend. Les autres intégrations restent `coming_soon`.
+La page Connecteurs affiche Gmail, Google Drive, Google Calendar, GitHub et Custom MCP Server. Google Calendar demande la configuration OAuth locale (`setup_required`) tant que ses paramètres serveur ne sont pas présents ; une fois configuré, il devient disponible en lecture seule. Les autres intégrations restent `coming_soon`.
 
 - `GET /api/connectors` renvoie le catalogue, les permissions et les outils réellement accessibles à l’utilisateur courant.
 - `GET /api/conversations/{id}/connectors` lit les connecteurs sélectionnés pour la conversation.

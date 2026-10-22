@@ -50,7 +50,7 @@ export interface ChatBackendHealth {
 }
 
 export type ConnectorStatus = 'connected' | 'disconnected' | 'error'
-export type ConnectorAvailability = 'available' | 'coming_soon'
+export type ConnectorAvailability = 'available' | 'setup_required' | 'coming_soon'
 export type ConnectorAccess = 'read' | 'write'
 
 export interface ConnectorPermission {

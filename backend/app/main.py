@@ -577,7 +577,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             google_oauth = GoogleOAuthClient(app_settings, database, vault, OAuthStateStore(database))
         except ValueError:
             logger.error("Google Calendar disabled because token encryption key is invalid")
-    connector_registry = ConnectorRegistry(available_connector_ids={"google_calendar"} if google_oauth else set())
+    connector_registry = ConnectorRegistry(
+        available_connector_ids={"google_calendar"} if google_oauth else set(),
+        setup_required_connector_ids=set() if google_oauth else {"google_calendar"},
+    )
     application.state.connector_registry = connector_registry
     application.state.tool_registry = ToolRegistry(connector_registry)
     application.state.google_oauth = google_oauth

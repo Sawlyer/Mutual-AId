@@ -124,7 +124,7 @@ class ConnectorRead(BaseModel):
     available_tools: list[ConnectorToolRead]
     required_scopes: list[ConnectorPermissionRead]
     status: Literal["connected", "disconnected", "error"]
-    availability: Literal["available", "coming_soon"]
+    availability: Literal["available", "setup_required", "coming_soon"]
 
 
 class ConnectorPreferencesUpdate(BaseModel):

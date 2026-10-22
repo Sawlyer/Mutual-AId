@@ -51,6 +51,8 @@ function ConnectorCard({ connector, Icon }: { connector: ConnectorCatalogItem; I
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const comingSoon = connector.availability === 'coming_soon'
+  const setupRequired = connector.availability === 'setup_required'
+  const [setupOpen, setSetupOpen] = useState(false)
   const statusTone = connector.status === 'connected' ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300'
     : connector.status === 'error' ? 'border-destructive/20 bg-destructive/5 text-destructive'
       : 'border-border bg-muted/40 text-muted-foreground'
@@ -61,6 +63,7 @@ function ConnectorCard({ connector, Icon }: { connector: ConnectorCatalogItem; I
         <div className="flex flex-wrap justify-end gap-1.5">
           <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-medium ${statusTone}`}>{connector.status === 'connected' ? <Check className="size-3" /> : connector.status === 'error' ? <TriangleAlert className="size-3" /> : null}{statusLabels[connector.status]}</span>
           {comingSoon && <span className="inline-flex items-center gap-1 rounded-full border border-primary/15 bg-primary/5 px-2 py-1 text-[10px] font-medium text-primary"><Clock3 aria-hidden="true" className="size-3" />Bientôt disponible</span>}
+          {setupRequired && <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/20 bg-amber-500/5 px-2 py-1 text-[10px] font-medium text-amber-700 dark:text-amber-300"><TriangleAlert aria-hidden="true" className="size-3" />Configuration requise</span>}
         </div>
       </div>
       <div><h3 className="font-heading text-base font-semibold">{connector.name}</h3><p className="mt-1 min-h-10 text-xs leading-relaxed text-muted-foreground">{connector.description}</p></div>
@@ -71,7 +74,18 @@ function ConnectorCard({ connector, Icon }: { connector: ConnectorCatalogItem; I
       </div>
       {connector.available_tools.length > 0 && <p className="text-[10px] text-muted-foreground">{connector.available_tools.length} outil(s) réellement disponible(s)</p>}
       {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
+      {setupRequired && setupOpen && <div className="space-y-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-relaxed">
+        <p className="font-medium text-foreground">Google OAuth n’est pas encore configuré dans le backend.</p>
+        <ol className="list-decimal space-y-1.5 pl-4 text-muted-foreground">
+          <li>Dans Google Cloud, active Google Calendar API et crée un identifiant OAuth de type application Web.</li>
+          <li>Ajoute cette URI de redirection autorisée : <code className="break-all rounded bg-background px-1 py-0.5 text-[10px]">http://127.0.0.1:8000/api/connectors/google_calendar/callback</code></li>
+          <li>Dans <code className="rounded bg-background px-1 py-0.5">backend/.env</code>, définis <code>GOOGLE_OAUTH_CLIENT_ID</code>, <code>GOOGLE_OAUTH_CLIENT_SECRET</code>, <code>GOOGLE_OAUTH_REDIRECT_URI</code> et <code>CONNECTOR_TOKEN_ENCRYPTION_KEY</code>.</li>
+        </ol>
+        <p className="text-muted-foreground">Génère la clé de chiffrement dans le dossier <code>backend/</code> avec <code className="break-all">uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"</code>, puis relance <code>npm run dev:all</code>. Garde le secret Google et la clé uniquement dans le fichier local.</p>
+        <a className="inline-flex font-medium text-primary underline underline-offset-4" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Ouvrir les identifiants Google Cloud</a>
+      </div>}
       <Button variant="outline" size="sm" className="w-full" disabled={busy || comingSoon} onClick={() => {
+        if (setupRequired) { setSetupOpen((open) => !open); return }
         setBusy(true); setActionError(null)
         const action = connector.id === 'google_calendar'
           ? connector.status === 'connected'
@@ -79,7 +93,7 @@ function ConnectorCard({ connector, Icon }: { connector: ConnectorCatalogItem; I
             : chatAdapter.connectGoogleCalendar().then((url) => { window.location.assign(url) })
           : Promise.reject(new Error('Ce connecteur n’est pas disponible.'))
         void action.catch((reason: unknown) => setActionError(reason instanceof Error ? reason.message : 'Action impossible.')).finally(() => setBusy(false))
-      }}>{busy ? 'Connexion…' : comingSoon ? 'Bientôt disponible' : connector.status === 'connected' ? 'Déconnecter' : 'Connecter'}</Button>
+      }}>{busy ? 'Connexion…' : comingSoon ? 'Bientôt disponible' : setupRequired ? setupOpen ? 'Masquer les étapes' : 'Configurer Google Calendar' : connector.status === 'connected' ? 'Déconnecter' : 'Connecter'}</Button>
     </CardContent>
   </Card>
 }
