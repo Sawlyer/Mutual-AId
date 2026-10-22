@@ -101,6 +101,21 @@ class Database:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, connector_id)
                 );
+                CREATE TABLE IF NOT EXISTS mcp_servers (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    encrypted_auth_token TEXT,
+                    status TEXT NOT NULL DEFAULT 'not_checked' CHECK (status IN ('not_checked', 'ready', 'error')),
+                    discovered_tools_json TEXT NOT NULL DEFAULT '[]',
+                    approved_tools_json TEXT NOT NULL DEFAULT '[]',
+                    last_checked_at TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS mcp_servers_user_created ON mcp_servers(user_id, created_at);
                 CREATE TABLE IF NOT EXISTS agent_profiles (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -440,6 +455,44 @@ class Database:
     def delete_connector_credentials(self, user_id: str, connector_id: str) -> None:
         with self.connection() as connection:
             connection.execute("DELETE FROM connector_credentials WHERE user_id = ? AND connector_id = ?", (user_id, connector_id))
+
+    def create_mcp_server(self, server_id: str, user_id: str, name: str, url: str, encrypted_auth_token: str | None) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO mcp_servers (id, user_id, name, url, encrypted_auth_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (server_id, user_id, name, url, encrypted_auth_token, utc_now(), utc_now()),
+            )
+
+    def list_mcp_servers(self, user_id: str) -> list[dict[str, object]]:
+        with self.connection() as connection:
+            rows = connection.execute("SELECT * FROM mcp_servers WHERE user_id = ? ORDER BY created_at, id", (user_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_mcp_server(self, user_id: str, server_id: str) -> dict[str, object] | None:
+        with self.connection() as connection:
+            row = connection.execute("SELECT * FROM mcp_servers WHERE user_id = ? AND id = ?", (user_id, server_id)).fetchone()
+        return dict(row) if row else None
+
+    def update_mcp_server_tools(self, user_id: str, server_id: str, tools: list[dict[str, object]], status: str = "ready", error: str | None = None) -> bool:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "UPDATE mcp_servers SET discovered_tools_json = ?, status = ?, last_checked_at = ?, last_error = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (json.dumps(tools), status, utc_now(), error, utc_now(), user_id, server_id),
+            )
+        return cursor.rowcount == 1
+
+    def set_mcp_server_approved_tools(self, user_id: str, server_id: str, names: list[str]) -> bool:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "UPDATE mcp_servers SET approved_tools_json = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (json.dumps(names), utc_now(), user_id, server_id),
+            )
+        return cursor.rowcount == 1
+
+    def delete_mcp_server(self, user_id: str, server_id: str) -> bool:
+        with self.connection() as connection:
+            cursor = connection.execute("DELETE FROM mcp_servers WHERE user_id = ? AND id = ?", (user_id, server_id))
+        return cursor.rowcount == 1
 
     def create_conversation(self, title: str, owner_id: str = "local-user") -> ConversationRead:
         conversation_id = str(uuid4())

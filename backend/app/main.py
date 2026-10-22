@@ -30,6 +30,8 @@ from app.connectors.github_api import github_list_issues, github_list_repositori
 from app.connectors.github_oauth import GITHUB_READ_PERMISSIONS, GitHubAppOAuthClient, GitHubOAuthNotConfigured
 from app.connectors.context import ConnectorToolContext
 from app.connectors.oauth import OAuthStateStore, TokenVault
+from app.connectors.mcp_models import McpServerCreate, McpServerRead, McpServerUpdateTools
+from app.connectors.mcp_service import McpService
 from app.config import Settings
 from app.db import Database
 from app.schemas import (
@@ -455,6 +457,30 @@ async def list_connectors(request: Request, database: Db, user: CurrentUser) -> 
         connector_read(connector, database, user.id, request.app.state.tool_registry)
         for connector in request.app.state.connector_registry.list()
     ]
+
+
+@router.get("/connectors/mcp", response_model=list[McpServerRead], summary="Lister les serveurs MCP de l’utilisateur")
+async def list_mcp_servers(database: Db, settings: AppSettings, user: CurrentUser) -> list[McpServerRead]:
+    return McpService(database, settings).list_servers(user.id)
+
+
+@router.post("/connectors/mcp", response_model=McpServerRead, status_code=201,
+             dependencies=[Depends(rate_limit), TrustedOrigin], summary="Ajouter un serveur MCP distant")
+async def create_mcp_server(payload: McpServerCreate, database: Db, settings: AppSettings, user: CurrentUser) -> McpServerRead:
+    return McpService(database, settings).create_server(user.id, payload)
+
+
+@router.put("/connectors/mcp/{server_id}/tools", response_model=McpServerRead,
+            dependencies=[Depends(rate_limit), TrustedOrigin], summary="Choisir les outils MCP autorisés")
+async def update_mcp_server_tools(server_id: str, payload: McpServerUpdateTools, database: Db, settings: AppSettings, user: CurrentUser) -> McpServerRead:
+    return McpService(database, settings).set_allowed_tools(user.id, server_id, payload.tool_names)
+
+
+@router.delete("/connectors/mcp/{server_id}", status_code=204,
+               dependencies=[Depends(rate_limit), TrustedOrigin], summary="Supprimer un serveur MCP")
+async def delete_mcp_server(server_id: str, database: Db, settings: AppSettings, user: CurrentUser) -> Response:
+    McpService(database, settings).delete_server(user.id, server_id)
+    return Response(status_code=204)
 
 
 @router.post("/connectors/{connector_id}/connect", dependencies=[Depends(rate_limit), TrustedOrigin], summary="Démarrer OAuth Google")

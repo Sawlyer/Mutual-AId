@@ -4,6 +4,12 @@ from app.main import create_app
 from app.config import Settings
 from app.db import Database
 from fastapi.testclient import TestClient
+from cryptography.fernet import Fernet
+from pydantic import ValidationError
+import pytest
+
+from app.connectors.mcp_models import McpServerCreate
+from app.connectors.oauth import TokenVault
 
 
 def make_client(tmp_path):
@@ -32,6 +38,55 @@ def test_catalog_lists_only_disconnected_connectors_without_tools(tmp_path):
     assert connectors["github"]["availability"] == "setup_required"
     assert connectors["custom_mcp"]["availability"] == "coming_soon"
     assert all(connector["available_tools"] == [] for connector in connectors.values())
+
+
+def test_mcp_server_create_rejects_local_and_credential_embedded_urls():
+    with pytest.raises(ValidationError):
+        McpServerCreate(name="Local", url="http://127.0.0.1:8080/mcp")
+    with pytest.raises(ValidationError):
+        McpServerCreate(name="Secret URL", url="https://user:pass@example.org/mcp")
+
+
+def test_mcp_servers_are_user_scoped_and_credentials_are_encrypted(tmp_path):
+    db_path = tmp_path / "mcp.sqlite3"
+    key = Fernet.generate_key().decode()
+    settings = Settings(database_path=db_path, openai_api_key="", openai_model="", connector_token_encryption_key=key)
+    with TestClient(create_app(settings)) as owner:
+        owner.post("/api/auth/register", json={"name": "Owner", "email": "owner@example.com", "password": "owner test password long"})
+        created = owner.post("/api/connectors/mcp", json={
+            "name": "Research MCP", "url": "https://example.com/mcp", "auth_token": "sensitive-token-value",
+        })
+        server = created.json()
+        rows = owner.app.state.database.list_mcp_servers(owner.app.state.database.get_user_by_email("owner@example.com")["id"])
+        listing = owner.get("/api/connectors/mcp").json()
+
+    assert created.status_code == 201
+    assert "auth_token" not in server and "encrypted_auth_token" not in server
+    assert rows[0]["encrypted_auth_token"] != "sensitive-token-value"
+    assert TokenVault(key).decrypt_payload(rows[0]["encrypted_auth_token"]) == {"auth_token": "sensitive-token-value"}
+    assert listing[0]["id"] == server["id"]
+    assert "sensitive-token-value" not in created.text
+
+    with TestClient(create_app(settings)) as other:
+        other.post("/api/auth/register", json={"name": "Other", "email": "other@example.com", "password": "other test password long"})
+        assert other.get("/api/connectors/mcp").json() == []
+        assert other.delete(f"/api/connectors/mcp/{server['id']}").status_code == 404
+
+
+def test_mcp_tool_approval_only_accepts_discovered_tools(tmp_path):
+    key = Fernet.generate_key().decode()
+    settings = Settings(database_path=tmp_path / "mcp-tools.sqlite3", openai_api_key="", openai_model="", connector_token_encryption_key=key)
+    with TestClient(create_app(settings)) as client:
+        client.post("/api/auth/register", json={"name": "Tools", "email": "tools@example.com", "password": "tools test password long"})
+        server = client.post("/api/connectors/mcp", json={"name": "Docs", "url": "https://example.com/mcp"}).json()
+        user_id = client.app.state.database.get_user_by_email("tools@example.com")["id"]
+        client.app.state.database.update_mcp_server_tools(user_id, server["id"], [{"name": "search_docs", "description": "Search documentation"}])
+        selected = client.put(f"/api/connectors/mcp/{server['id']}/tools", json={"tool_names": ["search_docs"]})
+        rejected = client.put(f"/api/connectors/mcp/{server['id']}/tools", json={"tool_names": ["delete_all"]})
+
+    assert selected.status_code == 200
+    assert selected.json()["approved_tool_names"] == ["search_docs"]
+    assert rejected.status_code == 422
 
 
 def test_connector_preferences_are_scoped_to_conversation_and_survive_reads(tmp_path):
