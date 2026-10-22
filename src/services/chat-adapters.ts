@@ -95,6 +95,8 @@ export interface ChatAdapter {
   deleteConversation(conversationId: string): Promise<void>
   listMessages(conversationId: string): Promise<Message[]>
   listConnectors(): Promise<ConnectorCatalogItem[]>
+  connectConnector(connectorId: string): Promise<string>
+  disconnectConnector(connectorId: string): Promise<void>
   connectGoogleCalendar(): Promise<string>
   disconnectGoogleCalendar(): Promise<void>
   getConversationConnectors(conversationId: string): Promise<ConversationConnectorPreferences>
@@ -149,8 +151,10 @@ class DemoAdapter implements ChatAdapter {
   async deleteConversation(conversationId: string) { useConversationsStore.getState().deleteConversation(conversationId) }
   async listMessages(conversationId: string) { return useConversationsStore.getState().messages.filter((message) => message.conversationId === conversationId) }
   async listConnectors() { return demoConnectors }
-  async connectGoogleCalendar(): Promise<string> { throw new ChatServiceError('Les connecteurs ne sont pas disponibles en mode démo.') }
-  async disconnectGoogleCalendar(): Promise<void> { throw new ChatServiceError('Les connecteurs ne sont pas disponibles en mode démo.') }
+  async connectConnector(connectorId: string): Promise<string> { void connectorId; throw new ChatServiceError('Les connecteurs ne sont pas disponibles en mode démo.') }
+  async disconnectConnector(connectorId: string): Promise<void> { void connectorId; throw new ChatServiceError('Les connecteurs ne sont pas disponibles en mode démo.') }
+  async connectGoogleCalendar() { return this.connectConnector('google_calendar') }
+  async disconnectGoogleCalendar() { return this.disconnectConnector('google_calendar') }
   async getConversationConnectors(conversationId: string): Promise<ConversationConnectorPreferences> {
     const connectorIds = useConversationsStore.getState().conversations.find((item) => item.id === conversationId)?.connectorIds ?? []
     return { conversation_id: conversationId, connector_ids: connectorIds, connectors: demoConnectors.filter((item) => connectorIds.includes(item.id)) }
@@ -216,14 +220,17 @@ class OpenAIAdapter implements ChatAdapter {
     return this.request<ConnectorCatalogItem[]>('/connectors')
   }
 
-  async connectGoogleCalendar() {
-    const result = await this.request<{ authorization_url: string }>('/connectors/google_calendar/connect', { method: 'POST' })
+  async connectConnector(connectorId: string) {
+    const result = await this.request<{ authorization_url: string }>(`/connectors/${encodeURIComponent(connectorId)}/connect`, { method: 'POST' })
     return result.authorization_url
   }
 
-  async disconnectGoogleCalendar() {
-    await this.request<void>('/connectors/google_calendar/disconnect', { method: 'POST' })
+  async disconnectConnector(connectorId: string) {
+    await this.request<void>(`/connectors/${encodeURIComponent(connectorId)}/disconnect`, { method: 'POST' })
   }
+
+  async connectGoogleCalendar() { return this.connectConnector('google_calendar') }
+  async disconnectGoogleCalendar() { return this.disconnectConnector('google_calendar') }
 
   async getConversationConnectors(conversationId: string) {
     return this.request<ConversationConnectorPreferences>(`/conversations/${encodeURIComponent(conversationId)}/connectors`)

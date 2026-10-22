@@ -12,9 +12,10 @@ export function ConnectorsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const oauthParams = new URLSearchParams(window.location.search)
-  const notice = oauthParams.get('connected') === 'google_calendar' ? 'Google Calendar est connecté en lecture seule.' : null
+  const connectedId = oauthParams.get('connected')
+  const notice = connectedId ? `${({ gmail: 'Gmail', google_drive: 'Google Drive', google_calendar: 'Google Calendar', github: 'GitHub' } as Record<string, string>)[connectedId] ?? 'Le service'} est connecté en lecture seule.` : null
   const oauthError = oauthParams.get('oauth_error')
-  const oauthErrorMessage = oauthError ? oauthError === 'denied' ? 'La connexion Google a été annulée.' : 'La connexion Google n’a pas abouti. Vérifiez la configuration OAuth puis réessayez.' : null
+  const oauthErrorMessage = oauthError ? oauthError === 'denied' ? 'La connexion a été annulée.' : 'La connexion n’a pas abouti. Vérifiez la configuration OAuth puis réessayez.' : null
 
   useEffect(() => {
     let cancelled = false
@@ -53,6 +54,10 @@ function ConnectorCard({ connector, Icon }: { connector: ConnectorCatalogItem; I
   const comingSoon = connector.availability === 'coming_soon'
   const setupRequired = connector.availability === 'setup_required'
   const [setupOpen, setSetupOpen] = useState(false)
+  const googleConnector = ['gmail', 'google_drive', 'google_calendar'].includes(connector.id)
+  const setup = googleConnector
+    ? { title: 'Google OAuth n’est pas encore configuré dans le backend.', api: connector.id === 'gmail' ? 'Gmail API' : connector.id === 'google_drive' ? 'Google Drive API' : 'Google Calendar API', callback: 'http://127.0.0.1:8000/api/connectors/google_calendar/callback', variables: 'GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_OAUTH_REDIRECT_URI' }
+    : { title: 'L’application OAuth GitHub n’est pas configurée dans le backend.', api: null, callback: 'http://127.0.0.1:8000/api/connectors/github/callback', variables: 'GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET, GITHUB_APP_REDIRECT_URI' }
   const statusTone = connector.status === 'connected' ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300'
     : connector.status === 'error' ? 'border-destructive/20 bg-destructive/5 text-destructive'
       : 'border-border bg-muted/40 text-muted-foreground'
@@ -67,33 +72,31 @@ function ConnectorCard({ connector, Icon }: { connector: ConnectorCatalogItem; I
         </div>
       </div>
       <div><h3 className="font-heading text-base font-semibold">{connector.name}</h3><p className="mt-1 min-h-10 text-xs leading-relaxed text-muted-foreground">{connector.description}</p></div>
-      <div><p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Capacités prévues</p><ul className="mt-2 flex flex-wrap gap-1.5">{connector.capabilities.map((capability) => <li key={capability} className="rounded-md bg-muted/60 px-2 py-1 text-[10px] text-muted-foreground">{capability}</li>)}</ul></div>
+      <div><p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Capacités</p><ul className="mt-2 flex flex-wrap gap-1.5">{connector.capabilities.map((capability) => <li key={capability} className="rounded-md bg-muted/60 px-2 py-1 text-[10px] text-muted-foreground">{capability}</li>)}</ul></div>
       <div className="mt-auto border-t border-border/60 pt-3">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Permissions envisagées</p>
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Permissions demandées</p>
         <ul className="mt-2 space-y-1.5">{connector.required_scopes.map((permission) => <li key={permission.id} className="flex items-start gap-2 text-[11px] leading-relaxed text-muted-foreground"><span className={`mt-0.5 rounded px-1 py-0.5 text-[9px] font-semibold uppercase ${permission.access === 'write' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'bg-blue-500/10 text-blue-700 dark:text-blue-300'}`}>{permission.access === 'write' ? 'écriture' : 'lecture'}</span><span><span className="text-foreground">{permission.label}</span><br />{permission.description}</span></li>)}</ul>
       </div>
       {connector.available_tools.length > 0 && <p className="text-[10px] text-muted-foreground">{connector.available_tools.length} outil(s) réellement disponible(s)</p>}
       {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
       {setupRequired && setupOpen && <div className="space-y-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-relaxed">
-        <p className="font-medium text-foreground">Google OAuth n’est pas encore configuré dans le backend.</p>
+        <p className="font-medium text-foreground">{setup.title}</p>
         <ol className="list-decimal space-y-1.5 pl-4 text-muted-foreground">
-          <li>Dans Google Cloud, active Google Calendar API et crée un identifiant OAuth de type application Web.</li>
-          <li>Ajoute cette URI de redirection autorisée : <code className="break-all rounded bg-background px-1 py-0.5 text-[10px]">http://127.0.0.1:8000/api/connectors/google_calendar/callback</code></li>
-          <li>Dans <code className="rounded bg-background px-1 py-0.5">backend/.env</code>, définis <code>GOOGLE_OAUTH_CLIENT_ID</code>, <code>GOOGLE_OAUTH_CLIENT_SECRET</code>, <code>GOOGLE_OAUTH_REDIRECT_URI</code> et <code>CONNECTOR_TOKEN_ENCRYPTION_KEY</code>.</li>
+          {googleConnector ? <li>Dans Google Cloud, active {setup.api} et crée un identifiant OAuth de type application Web.</li> : <li>Dans les paramètres développeur GitHub, crée une OAuth App et configure l’URL d’accueil locale.</li>}
+          <li>Ajoute cette URI de redirection autorisée : <code className="break-all rounded bg-background px-1 py-0.5 text-[10px]">{setup.callback}</code></li>
+          <li>Dans <code className="rounded bg-background px-1 py-0.5">backend/.env</code>, définis <code>{setup.variables}</code> et <code>CONNECTOR_TOKEN_ENCRYPTION_KEY</code>.</li>
         </ol>
-        <p className="text-muted-foreground">Génère la clé de chiffrement dans le dossier <code>backend/</code> avec <code className="break-all">uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"</code>, puis relance <code>npm run dev:all</code>. Garde le secret Google et la clé uniquement dans le fichier local.</p>
-        <a className="inline-flex font-medium text-primary underline underline-offset-4" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Ouvrir les identifiants Google Cloud</a>
+        <p className="text-muted-foreground">Génère la clé de chiffrement dans le dossier <code>backend/</code> avec <code className="break-all">uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"</code>, puis relance <code>npm run dev:all</code>. Garde les secrets OAuth et la clé uniquement dans le fichier local.</p>
+        {googleConnector ? <a className="inline-flex font-medium text-primary underline underline-offset-4" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Ouvrir les identifiants Google Cloud</a> : <a className="inline-flex font-medium text-primary underline underline-offset-4" href="https://github.com/settings/developers" target="_blank" rel="noreferrer">Ouvrir les paramètres développeur GitHub</a>}
       </div>}
       <Button variant="outline" size="sm" className="w-full" disabled={busy || comingSoon} onClick={() => {
         if (setupRequired) { setSetupOpen((open) => !open); return }
         setBusy(true); setActionError(null)
-        const action = connector.id === 'google_calendar'
-          ? connector.status === 'connected'
-            ? chatAdapter.disconnectGoogleCalendar().then(() => window.location.reload())
-            : chatAdapter.connectGoogleCalendar().then((url) => { window.location.assign(url) })
-          : Promise.reject(new Error('Ce connecteur n’est pas disponible.'))
+        const action = connector.status === 'connected'
+          ? chatAdapter.disconnectConnector(connector.id).then(() => window.location.reload())
+          : chatAdapter.connectConnector(connector.id).then((url) => { window.location.assign(url) })
         void action.catch((reason: unknown) => setActionError(reason instanceof Error ? reason.message : 'Action impossible.')).finally(() => setBusy(false))
-      }}>{busy ? 'Connexion…' : comingSoon ? 'Bientôt disponible' : setupRequired ? setupOpen ? 'Masquer les étapes' : 'Configurer Google Calendar' : connector.status === 'connected' ? 'Déconnecter' : 'Connecter'}</Button>
+      }}>{busy ? 'Connexion…' : comingSoon ? 'Bientôt disponible' : setupRequired ? setupOpen ? 'Masquer les étapes' : `Configurer ${googleConnector ? 'Google' : 'GitHub'}` : connector.status === 'connected' ? 'Déconnecter' : 'Connecter'}</Button>
     </CardContent>
   </Card>
 }

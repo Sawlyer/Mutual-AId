@@ -67,7 +67,7 @@ Toutes les routes de conversation et de connecteur nécessitent une session. Les
 
 ## Connecteurs
 
-La page Connecteurs affiche Gmail, Google Drive, Google Calendar, GitHub et Custom MCP Server. Google Calendar demande la configuration OAuth locale (`setup_required`) tant que ses paramètres serveur ne sont pas présents ; une fois configuré, il devient disponible en lecture seule. Les autres intégrations restent `coming_soon`.
+La page Connecteurs affiche Gmail, Google Drive, Google Calendar, GitHub et Custom MCP Server. Gmail, Drive et Calendar utilisent le client OAuth Google commun ; GitHub utilise une OAuth App. Chaque service reste `setup_required` tant que ses paramètres serveur ne sont pas présents et passe en lecture seule après configuration. Custom MCP reste indisponible jusqu’à l’ajout et l’approbation d’un serveur dans l’interface dédiée.
 
 - `GET /api/connectors` renvoie le catalogue, les permissions et les outils réellement accessibles à l’utilisateur courant.
 - `GET /api/conversations/{id}/connectors` lit les connecteurs sélectionnés pour la conversation.
@@ -76,7 +76,9 @@ La page Connecteurs affiche Gmail, Google Drive, Google Calendar, GitHub et Cust
 
 Le backend stocke les états OAuth à usage unique et les jetons Google chiffrés avec `CONNECTOR_TOKEN_ENCRYPTION_KEY`, séparément par compte. L’outil Calendar revérifie connexion, sélection de conversation et scope à chaque appel, puis ne renvoie que titre, début, fin et statut d’événement. Aucun outil d’écriture Calendar n’est activé. Les comptes disposent d’une inscription, connexion, déconnexion et session persistante en cookie HttpOnly. Les mots de passe sont hachés avec Argon2. Configurez `AUTH_COOKIE_SECURE=true` lorsque l’application est servie en HTTPS.
 
-Pour activer Google Calendar, créez un client OAuth de type application Web dans Google Cloud, activez Google Calendar API, et ajoutez exactement `http://127.0.0.1:8000/api/connectors/google_calendar/callback` comme URI de redirection autorisée en local. Copiez `backend/.env.example` vers `backend/.env`, puis définissez `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI` et une clé Fernet stable dans `CONNECTOR_TOKEN_ENCRYPTION_KEY`. Générez cette clé depuis `backend/` avec `uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Redémarrez le backend. L’écran Connecteurs affichera alors Google Calendar comme disponible et demandera uniquement la permission de lecture.
+Pour activer Google, créez un client OAuth de type application Web dans Google Cloud, activez Gmail API, Google Drive API et/ou Google Calendar API selon les services voulus, puis ajoutez exactement `http://127.0.0.1:8000/api/connectors/google_calendar/callback` comme URI de redirection autorisée en local. Copiez `backend/.env.example` vers `backend/.env`, puis définissez `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI` et une clé Fernet stable dans `CONNECTOR_TOKEN_ENCRYPTION_KEY`. Les autorisations sont limitées à la lecture : Gmail readonly, Drive metadata readonly et Calendar readonly. Générez la clé depuis `backend/` avec `uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+
+Pour GitHub, créez une OAuth App dans les paramètres développeur, inscrivez `http://127.0.0.1:8000/api/connectors/github/callback` comme callback, puis définissez `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` et `GITHUB_APP_REDIRECT_URI` dans `backend/.env`. GitHub ne demande que les permissions de lecture nécessaires aux dépôts et issues. Conservez tous les secrets uniquement dans `backend/.env` et redémarrez le backend après configuration. La page Connecteurs affichera les services correctement configurés et permettra de lancer/retirer leur connexion.
 
 ## Vérifications
 
