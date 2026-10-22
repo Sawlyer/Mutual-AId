@@ -23,7 +23,7 @@ from app.planning.service import Planner, PlanningUnavailable
 from app.connectors.registry import ConnectorRegistry
 from app.connectors.tools import ConnectorAuthorizationError, ToolRegistry
 from app.connectors.google_calendar import calendar_list_events
-from app.connectors.google_oauth import CALENDAR_READ_SCOPE, GoogleOAuthClient, GoogleOAuthNotConfigured, InvalidOAuthState
+from app.connectors.google_oauth import CALENDAR_READ_SCOPE, GOOGLE_CONNECTOR_SCOPES, GoogleOAuthClient, GoogleOAuthNotConfigured, InvalidOAuthState
 from app.connectors.oauth import OAuthStateStore, TokenVault
 from app.config import Settings
 from app.db import Database
@@ -449,18 +449,22 @@ async def list_connectors(request: Request, database: Db, user: CurrentUser) -> 
     ]
 
 
-@router.post("/connectors/google_calendar/connect", dependencies=[Depends(rate_limit), TrustedOrigin], summary="Démarrer OAuth Google Calendar")
-async def connect_google_calendar(request: Request, user: CurrentUser) -> dict[str, str]:
+@router.post("/connectors/{connector_id}/connect", dependencies=[Depends(rate_limit), TrustedOrigin], summary="Démarrer OAuth Google")
+async def connect_google_connector(connector_id: str, request: Request, user: CurrentUser) -> dict[str, str]:
+    scopes = GOOGLE_CONNECTOR_SCOPES.get(connector_id)
+    if scopes is None:
+        raise HTTPException(status_code=404, detail="Ce connecteur OAuth est inconnu.")
     oauth: GoogleOAuthClient | None = request.app.state.google_oauth
     if oauth is None:
-        raise HTTPException(status_code=503, detail="Google Calendar n’est pas configuré sur le backend.")
+        raise HTTPException(status_code=503, detail="Google OAuth n’est pas configuré sur le backend.")
     try:
-        return {"authorization_url": oauth.authorization_url(user.id, [CALENDAR_READ_SCOPE])}
+        return {"authorization_url": oauth.authorization_url(user.id, sorted(scopes), connector_id=connector_id)}
     except GoogleOAuthNotConfigured as error:
-        raise HTTPException(status_code=503, detail="Google Calendar n’est pas configuré sur le backend.") from error
+        raise HTTPException(status_code=503, detail="Google OAuth n’est pas configuré sur le backend.") from error
 
 
-@router.get("/connectors/google_calendar/callback", summary="Terminer OAuth Google Calendar")
+@router.get("/connectors/google/callback", summary="Terminer OAuth Google")
+@router.get("/connectors/google_calendar/callback", include_in_schema=False)
 async def google_calendar_callback(request: Request, database: Db, settings: AppSettings) -> RedirectResponse:
     token = request.cookies.get(settings.auth_cookie_name)
     user = database.get_user_for_session(token_digest(token)) if token else None
@@ -476,25 +480,27 @@ async def google_calendar_callback(request: Request, database: Db, settings: App
         return RedirectResponse(f"{origin}/connectors?oauth_error=denied", status_code=303,
                                 headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
     try:
-        await oauth.exchange_code(user.id, request.query_params.get("code", ""), request.query_params.get("state", ""))
+        result = await oauth.exchange_code(user.id, request.query_params.get("code", ""), request.query_params.get("state", ""))
     except InvalidOAuthState:
         return RedirectResponse(f"{origin}/connectors?oauth_error=state", status_code=303,
                                 headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
     except Exception:
-        logger.exception("Google Calendar OAuth callback failed for user %s", user.id)
+        logger.exception("Google OAuth callback failed for user %s", user.id)
         return RedirectResponse(f"{origin}/connectors?oauth_error=exchange", status_code=303,
                                 headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
-    return RedirectResponse(f"{origin}/connectors?connected=google_calendar", status_code=303,
+    return RedirectResponse(f"{origin}/connectors?connected={result['connector_id']}", status_code=303,
                             headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
 
-@router.post("/connectors/google_calendar/disconnect", status_code=204,
-             dependencies=[Depends(rate_limit), TrustedOrigin], summary="Déconnecter Google Calendar")
-async def disconnect_google_calendar(request: Request, user: CurrentUser) -> Response:
+@router.post("/connectors/{connector_id}/disconnect", status_code=204,
+             dependencies=[Depends(rate_limit), TrustedOrigin], summary="Déconnecter un connecteur Google")
+async def disconnect_google_connector(connector_id: str, request: Request, user: CurrentUser) -> Response:
+    if connector_id not in GOOGLE_CONNECTOR_SCOPES:
+        raise HTTPException(status_code=404, detail="Ce connecteur OAuth est inconnu.")
     oauth: GoogleOAuthClient | None = request.app.state.google_oauth
     if oauth is None:
-        raise HTTPException(status_code=503, detail="Google Calendar n’est pas configuré sur le backend.")
-    await oauth.revoke(user.id)
+        raise HTTPException(status_code=503, detail="Google OAuth n’est pas configuré sur le backend.")
+    await oauth.revoke(user.id, connector_id)
     return Response(status_code=204)
 
 
@@ -571,15 +577,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.settings = app_settings
     application.state.database = database
     google_oauth: GoogleOAuthClient | None = None
-    if app_settings.google_calendar_configured:
+    if app_settings.google_oauth_configured:
         try:
             vault = TokenVault(app_settings.connector_token_key or "")
             google_oauth = GoogleOAuthClient(app_settings, database, vault, OAuthStateStore(database))
         except ValueError:
-            logger.error("Google Calendar disabled because token encryption key is invalid")
+            logger.error("Google connectors disabled because token encryption key is invalid")
     connector_registry = ConnectorRegistry(
-        available_connector_ids={"google_calendar"} if google_oauth else set(),
-        setup_required_connector_ids=set() if google_oauth else {"google_calendar"},
+        available_connector_ids=set(GOOGLE_CONNECTOR_SCOPES) if google_oauth else set(),
+        setup_required_connector_ids=set() if google_oauth else set(GOOGLE_CONNECTOR_SCOPES),
     )
     application.state.connector_registry = connector_registry
     application.state.tool_registry = ToolRegistry(connector_registry)

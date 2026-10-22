@@ -16,6 +16,7 @@ class OAuthState:
     scopes: list[str]
     redirect_path: str
     expires_at: str
+    connector_id: str = "google_calendar"
 
 
 class TokenVault:
@@ -52,14 +53,14 @@ class OAuthStateStore:
     def _digest(value: str) -> str:
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
-    def create(self, user_id: str, scopes: list[str], redirect_path: str) -> OAuthState:
+    def create(self, user_id: str, scopes: list[str], redirect_path: str, connector_id: str = "google_calendar") -> OAuthState:
         value = secrets.token_urlsafe(32)
         expires = datetime.now(timezone.utc) + timedelta(seconds=self.lifetime_seconds)
         expires_at = expires.isoformat()
-        self.database.create_connector_oauth_state(self._digest(value), user_id, scopes, redirect_path, expires_at)
-        return OAuthState(value=value, user_id=user_id, scopes=list(scopes), redirect_path=redirect_path, expires_at=expires_at)
+        self.database.create_connector_oauth_state(self._digest(value), user_id, scopes, redirect_path, expires_at, connector_id)
+        return OAuthState(value=value, user_id=user_id, scopes=list(scopes), redirect_path=redirect_path, expires_at=expires_at, connector_id=connector_id)
 
-    def consume(self, user_id: str, value: str) -> dict[str, object] | None:
+    def consume(self, user_id: str, value: str, connector_id: str | None = None) -> dict[str, object] | None:
         if not value or len(value) > 256:
             return None
-        return self.database.consume_connector_oauth_state(self._digest(value), user_id)
+        return self.database.consume_connector_oauth_state(self._digest(value), user_id, connector_id)

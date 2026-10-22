@@ -28,7 +28,9 @@ def test_catalog_lists_only_disconnected_connectors_without_tools(tmp_path):
     }
     assert all(connector["status"] == "disconnected" for connector in connectors.values())
     assert connectors["google_calendar"]["availability"] == "setup_required"
-    assert all(connector["availability"] == "coming_soon" for connector in connectors.values() if connector["id"] != "google_calendar")
+    assert all(connectors[connector_id]["availability"] == "setup_required" for connector_id in ("gmail", "google_drive", "google_calendar"))
+    assert connectors["github"]["availability"] == "coming_soon"
+    assert connectors["custom_mcp"]["availability"] == "coming_soon"
     assert all(connector["available_tools"] == [] for connector in connectors.values())
 
 
@@ -170,6 +172,100 @@ def test_oauth_state_is_single_use_and_bound_to_user(tmp_path):
     assert store.consume("other", state.value) is None
     assert store.consume("owner", state.value) is not None
     assert store.consume("owner", state.value) is None
+
+
+def test_oauth_state_is_bound_to_connector(tmp_path):
+    from app.connectors.oauth import OAuthStateStore
+    database = Database(tmp_path / "oauth-connector-state.sqlite3")
+    database.initialize()
+    store = OAuthStateStore(database)
+    state = store.create(
+        "owner", ["https://www.googleapis.com/auth/gmail.readonly"], "/connectors",
+        connector_id="gmail",
+    )
+    assert store.consume("owner", state.value, connector_id="google_drive") is None
+    consumed = store.consume("owner", state.value, connector_id="gmail")
+    assert consumed is not None
+    assert consumed["connector_id"] == "gmail"
+
+
+def test_google_oauth_uses_connector_scopes_and_stores_credentials_per_connector(tmp_path):
+    import asyncio
+    from urllib.parse import parse_qs, urlparse
+    import httpx
+    from cryptography.fernet import Fernet
+    from app.connectors.google_oauth import (
+        CALENDAR_READ_SCOPE, DRIVE_METADATA_READ_SCOPE, GMAIL_READ_SCOPE, GoogleOAuthClient,
+    )
+    from app.connectors.oauth import OAuthStateStore, TokenVault
+    database = Database(tmp_path / "google-connectors.sqlite3")
+    database.initialize()
+    settings = Settings(
+        database_path=tmp_path / "google-connectors.sqlite3", openai_api_key="", openai_model="",
+        google_oauth_client_id="client-id", google_oauth_client_secret="client-secret",
+        google_oauth_redirect_uri="http://localhost:8000/api/connectors/google/callback",
+        connector_token_encryption_key=Fernet.generate_key().decode(),
+    )
+    scope_by_code = {"gmail-code": GMAIL_READ_SCOPE, "drive-code": DRIVE_METADATA_READ_SCOPE, "calendar-code": CALENDAR_READ_SCOPE}
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={
+        "access_token": "access-secret", "refresh_token": f"refresh-{request.content.decode().split('code=')[1].split('&')[0]}",
+        "expires_in": 3600, "scope": scope_by_code[request.content.decode().split("code=")[1].split("&")[0]],
+    }))
+    expected = {
+        "gmail": (GMAIL_READ_SCOPE, "gmail-code"),
+        "google_drive": (DRIVE_METADATA_READ_SCOPE, "drive-code"),
+        "google_calendar": (CALENDAR_READ_SCOPE, "calendar-code"),
+    }
+
+    async def exchange_all():
+        async with httpx.AsyncClient(transport=transport) as client:
+            oauth = GoogleOAuthClient(settings, database, TokenVault(settings.connector_token_key), OAuthStateStore(database), client)
+            for connector_id, (scope, code) in expected.items():
+                url = oauth.authorization_url("user-a", [scope], connector_id=connector_id)
+                query = parse_qs(urlparse(url).query)
+                assert query["scope"] == [scope]
+                state = query["state"][0]
+                await oauth.exchange_code("user-a", code, state, connector_id=connector_id)
+
+    asyncio.run(exchange_all())
+    for connector_id in expected:
+        encrypted = database.get_connector_credentials("user-a", connector_id)
+        assert encrypted is not None
+        assert "access-secret" not in encrypted
+        assert database.get_connector_connection("user-a", connector_id)["status"] == "connected"
+
+
+def test_google_disconnect_revokes_provider_grant_only_after_last_google_connector(tmp_path):
+    import asyncio
+    import httpx
+    from cryptography.fernet import Fernet
+    from app.connectors.google_oauth import GoogleOAuthClient
+    from app.connectors.oauth import OAuthStateStore, TokenVault
+    database = Database(tmp_path / "google-disconnect.sqlite3")
+    database.initialize()
+    settings = Settings(
+        database_path=tmp_path / "google-disconnect.sqlite3", openai_api_key="", openai_model="",
+        google_oauth_client_id="client-id", google_oauth_client_secret="client-secret",
+        google_oauth_redirect_uri="http://localhost:8000/api/connectors/google/callback",
+        connector_token_encryption_key=Fernet.generate_key().decode(),
+    )
+    vault = TokenVault(settings.connector_token_key)
+    for connector_id, scope in (("gmail", "gmail.read"), ("google_calendar", "calendar.read")):
+        database.set_connector_connection("user-a", connector_id, "connected", [scope])
+        database.store_connector_credentials("user-a", connector_id, vault.encrypt_payload({"access_token": "token", "refresh_token": "refresh"}))
+    revoke_calls = []
+
+    async def revoke():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: (revoke_calls.append(request), httpx.Response(200))[1])) as client:
+            oauth = GoogleOAuthClient(settings, database, vault, OAuthStateStore(database), client)
+            await oauth.revoke("user-a", "gmail")
+            assert revoke_calls == []
+            await oauth.revoke("user-a", "google_calendar")
+
+    asyncio.run(revoke())
+    assert len(revoke_calls) == 1
+    assert database.get_connector_connection("user-a", "gmail")["status"] == "disconnected"
+    assert database.get_connector_credentials("user-a", "google_calendar") is None
 
 
 def test_calendar_oauth_requires_client_and_encryption_configuration(tmp_path):
@@ -327,12 +423,18 @@ def test_calendar_oauth_is_exposed_only_when_server_configuration_is_complete(tm
         assert response.status_code == 201
         connectors = {item["id"]: item for item in client.get("/api/connectors").json()}
         result = client.post("/api/connectors/google_calendar/connect")
+        gmail_result = client.post("/api/connectors/gmail/connect")
 
     assert connectors["google_calendar"]["availability"] == "available"
     assert connectors["google_calendar"]["capabilities"] == ["Consulter les événements", "Vérifier les disponibilités"]
     assert [item["name"] for item in connectors["google_calendar"]["available_tools"]] == []
     assert result.status_code == 200
     assert result.json()["authorization_url"].startswith("https://accounts.google.com/o/oauth2/v2/auth?")
+    assert connectors["gmail"]["availability"] == "available"
+    assert connectors["google_drive"]["availability"] == "available"
+    assert gmail_result.status_code == 200
+    from urllib.parse import parse_qs, urlparse
+    assert parse_qs(urlparse(gmail_result.json()["authorization_url"]).query)["scope"] == ["https://www.googleapis.com/auth/gmail.readonly"]
 
 
 def test_registry_marks_calendar_setup_required_until_oauth_is_configured():

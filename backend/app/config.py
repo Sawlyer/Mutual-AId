@@ -47,6 +47,11 @@ class Settings(BaseSettings):
         return value or None
 
     @property
-    def google_calendar_configured(self) -> bool:
+    def google_oauth_configured(self) -> bool:
         client_secret = self.google_oauth_client_secret.get_secret_value().strip() if self.google_oauth_client_secret else ""
         return bool(self.google_oauth_client_id and self.google_oauth_client_id.strip() and client_secret and self.google_oauth_redirect_uri and self.google_oauth_redirect_uri.strip() and self.connector_token_key)
+
+    @property
+    def google_calendar_configured(self) -> bool:
+        """Backward-compatible name for the shared Google OAuth configuration."""
+        return self.google_oauth_configured

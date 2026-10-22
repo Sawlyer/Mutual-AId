@@ -88,6 +88,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS connector_oauth_states (
                     state_hash TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
+                    connector_id TEXT NOT NULL DEFAULT 'google_calendar',
                     scopes_json TEXT NOT NULL,
                     redirect_path TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -227,6 +228,9 @@ class Database:
                 connection.execute("ALTER TABLE execution_tasks ADD COLUMN agent_profile_snapshot_json TEXT")
             if "approval_id" not in task_columns:
                 connection.execute("ALTER TABLE execution_tasks ADD COLUMN approval_id TEXT")
+            oauth_state_columns = {row["name"] for row in connection.execute("PRAGMA table_info(connector_oauth_states)")}
+            if "connector_id" not in oauth_state_columns:
+                connection.execute("ALTER TABLE connector_oauth_states ADD COLUMN connector_id TEXT NOT NULL DEFAULT 'google_calendar'")
 
     @staticmethod
     def _agent_profile(row: sqlite3.Row | None) -> dict[str, object] | None:
@@ -400,25 +404,25 @@ class Database:
         with self.connection() as connection:
             connection.execute("DELETE FROM auth_sessions WHERE token_hash = ?", (token_hash,))
 
-    def create_connector_oauth_state(self, state_hash: str, user_id: str, scopes: list[str], redirect_path: str, expires_at: str) -> None:
+    def create_connector_oauth_state(self, state_hash: str, user_id: str, scopes: list[str], redirect_path: str, expires_at: str, connector_id: str = "google_calendar") -> None:
         with self.connection() as connection:
             connection.execute("DELETE FROM connector_oauth_states WHERE expires_at <= ?", (utc_now(),))
             connection.execute(
-                "INSERT INTO connector_oauth_states (state_hash, user_id, scopes_json, redirect_path, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (state_hash, user_id, json.dumps(scopes), redirect_path, utc_now(), expires_at),
+                "INSERT INTO connector_oauth_states (state_hash, user_id, connector_id, scopes_json, redirect_path, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (state_hash, user_id, connector_id, json.dumps(scopes), redirect_path, utc_now(), expires_at),
             )
 
-    def consume_connector_oauth_state(self, state_hash: str, user_id: str) -> dict[str, object] | None:
+    def consume_connector_oauth_state(self, state_hash: str, user_id: str, connector_id: str | None = None) -> dict[str, object] | None:
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT * FROM connector_oauth_states WHERE state_hash = ? AND user_id = ? AND expires_at > ?",
                 (state_hash, user_id, utc_now()),
             ).fetchone()
-            if row is None:
+            if row is None or (connector_id is not None and row["connector_id"] != connector_id):
                 return None
             connection.execute("DELETE FROM connector_oauth_states WHERE state_hash = ?", (state_hash,))
-        return {"scopes": json.loads(row["scopes_json"]), "redirect_path": row["redirect_path"]}
+        return {"connector_id": row["connector_id"], "scopes": json.loads(row["scopes_json"]), "redirect_path": row["redirect_path"]}
 
     def store_connector_credentials(self, user_id: str, connector_id: str, encrypted_payload: str) -> None:
         with self.connection() as connection:
@@ -545,6 +549,16 @@ class Database:
             "granted_scopes": json.loads(row["granted_scopes_json"]),
             "error_message": row["error_message"],
         }
+
+    def has_other_connected_google_connector(self, user_id: str, connector_id: str) -> bool:
+        google_ids = ("gmail", "google_drive", "google_calendar")
+        placeholders = ",".join("?" for _ in google_ids)
+        with self.connection() as connection:
+            row = connection.execute(
+                f"SELECT 1 FROM connector_connections WHERE user_id = ? AND connector_id IN ({placeholders}) AND connector_id != ? AND status = 'connected' LIMIT 1",
+                (user_id, *google_ids, connector_id),
+            ).fetchone()
+        return row is not None
 
     def set_connector_connection(
         self,

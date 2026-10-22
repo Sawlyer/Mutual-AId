@@ -31,19 +31,18 @@ class ConnectorRegistry:
                 Connector(
                     id="gmail", name="Gmail", icon="mail",
                     description="Consulter et organiser les e-mails de votre compte.",
-                    capabilities=("Rechercher des e-mails", "Lire les messages", "Préparer des réponses"),
+                    capabilities=("Rechercher des e-mails", "Lire les messages"),
                     available_tools=(), availability="coming_soon", auth_provider=auth_provider,
                     required_scopes=_permissions(
                         ConnectorPermission("gmail.read", "Lecture des e-mails", "Rechercher et lire les messages.", _READ, _GOOGLE_MAIL),
-                        ConnectorPermission("gmail.write", "Écriture des e-mails", "Envoyer ou modifier des messages après validation.", _WRITE, "https://www.googleapis.com/auth/gmail.send"),
                     ),
                 ),
                 Connector(
                     id="google_drive", name="Google Drive", icon="drive",
                     description="Rechercher et consulter des fichiers Google Drive.",
-                    capabilities=("Rechercher des fichiers", "Lire des documents"),
+                    capabilities=("Rechercher des fichiers", "Consulter les métadonnées"),
                     available_tools=(), availability="coming_soon", auth_provider=auth_provider,
-                    required_scopes=_permissions(ConnectorPermission("drive.read", "Lecture des fichiers", "Rechercher et lire les fichiers autorisés.", _READ, _GOOGLE_DRIVE)),
+                    required_scopes=_permissions(ConnectorPermission("drive.metadata.read", "Lecture des métadonnées", "Rechercher les fichiers et consulter leurs métadonnées, sans lire leur contenu.", _READ, _GOOGLE_DRIVE)),
                 ),
                 Connector(
                     id="google_calendar", name="Google Calendar", icon="calendar",
