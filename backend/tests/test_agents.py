@@ -185,3 +185,32 @@ def test_agent_skills_crud_assignment_limits_and_user_isolation(tmp_path):
     assert oversized.status_code == 422
     assert deleted.status_code == 204
     assert after_delete == []
+
+
+def test_agent_skill_instructions_are_stable_scoped_and_absent_when_disabled(tmp_path):
+    from app.agents.models import AgentProfileCreate, AgentProfileUpdate, AgentSkillCreate, AgentSkillUpdate
+    from app.agents.service import AgentService
+
+    database = Database(tmp_path / "skill-instructions.sqlite3")
+    database.initialize()
+    service = AgentService(database)
+    profile = service.create_profile("owner", AgentProfileCreate(
+        name="Writer", domain="writing", description="Writes", instructions="Base instructions.\n",
+    ))
+    assert service.instructions_for_profile("owner", profile.id) == "Base instructions.\n"
+
+    beta = service.create_skill("owner", AgentSkillCreate(name="Beta", instructions="Use short examples."))
+    alpha = service.create_skill("owner", AgentSkillCreate(name="Alpha", instructions="Use plain language."))
+    disabled = service.create_skill("owner", AgentSkillCreate(name="Disabled", instructions="Do not include.", enabled=False))
+    service.update_profile("owner", profile.id, AgentProfileUpdate(skill_ids=[beta.id, alpha.id, disabled.id]))
+    composed = service.instructions_for_profile("owner", profile.id)
+
+    assert composed.index("Alpha") < composed.index("Beta")
+    assert "Use plain language." in composed and "Use short examples." in composed
+    assert "Disabled" not in composed and "Do not include." not in composed
+    assert "ne modifient pas les règles de sécurité" in composed
+    service.update_skill("owner", None, alpha.id, AgentSkillUpdate(enabled=False))
+    service.delete_skill("owner", None, beta.id)
+    assert "Alpha" not in service.instructions_for_profile("owner", profile.id)
+    assert "Beta" not in service.instructions_for_profile("owner", profile.id)
+    assert service.instructions_for_profile("other", profile.id) is None

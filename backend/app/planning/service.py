@@ -37,7 +37,14 @@ class Planner:
         if not self.settings.openai_configured:
             raise PlanningUnavailable("Planning is unavailable")
         profile_summary = [
-            {"id": profile.id, "name": profile.name, "capability_ids": profile.capability_ids}
+            {
+                "id": profile.id, "name": profile.name, "capability_ids": profile.capability_ids,
+                "skills": [
+                    {"name": skill.name, "description": skill.description}
+                    for skill in sorted(profile.skills, key=lambda item: (item.name.casefold(), item.id))
+                    if skill.enabled
+                ],
+            }
             for profile in profiles if profile.enabled
         ]
         connector_ids = sorted(set(request.enabled_connector_ids) & {

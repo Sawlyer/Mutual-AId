@@ -81,3 +81,37 @@ def test_planner_instruction_never_supplies_tools_or_scopes():
     from app.planning.service import PLANNER_INSTRUCTIONS
     assert "no tools" in PLANNER_INSTRUCTIONS.lower()
     assert "oauth" in PLANNER_INSTRUCTIONS.lower()
+
+
+def test_planner_receives_enabled_agent_skill_summaries(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.agents.models import AgentProfileCreate, AgentProfileUpdate, AgentSkillCreate
+    from app.agents.service import AgentService
+    from app.config import Settings
+    from app.db import Database
+    from app.planning import service as planning_service
+    from app.planning.schemas import PlanningDecision, PlanningRequest
+
+    database = Database(tmp_path / "planning-skills.sqlite3")
+    database.initialize()
+    agents = AgentService(database)
+    profile = agents.create_profile("user", AgentProfileCreate(
+        name="Researcher", domain="research", description="Research", instructions="Base.",
+    ))
+    enabled = agents.create_skill("user", AgentSkillCreate(name="Source checks", description="Verifies references.", instructions="Check sources."))
+    disabled = agents.create_skill("user", AgentSkillCreate(name="Disabled skill", instructions="Do not show." , enabled=False))
+    agents.update_profile("user", profile.id, AgentProfileUpdate(skill_ids=[enabled.id, disabled.id]))
+    captured = []
+
+    async def fake_run(_agent, user_input, **_kwargs):
+        captured.append(user_input)
+        return SimpleNamespace(final_output=PlanningDecision(summary="Simple", tasks=[], requires_orchestration=False))
+
+    monkeypatch.setattr(planning_service.Runner, "run", fake_run)
+    planner = planning_service.Planner(Settings(openai_api_key="key", openai_model="test-model"))
+    asyncio.run(planner.plan(PlanningRequest(user_id="user", conversation_id="c", message="Hello"), agents.list_profiles("user"), []))
+
+    assert "Source checks" in captured[0]
+    assert "Verifies references." in captured[0]
+    assert "Disabled skill" not in captured[0]

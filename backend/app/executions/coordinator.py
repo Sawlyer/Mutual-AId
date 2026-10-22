@@ -23,7 +23,8 @@ class AgentTaskExecutor:
 
     def __init__(self, settings: Settings, repository: ExecutionRepository, user_id: str, execution_id: str,
                  database: Database, tool_registry: ToolRegistry, google_oauth: GoogleOAuthClient | None,
-                 github_oauth: GitHubAppOAuthClient | None = None, mcp_runtime: McpRuntime | None = None):
+                 github_oauth: GitHubAppOAuthClient | None = None, mcp_runtime: McpRuntime | None = None,
+                 agent_service: AgentService | None = None):
         self.settings = settings
         self.repository = repository
         self.user_id = user_id
@@ -33,12 +34,15 @@ class AgentTaskExecutor:
         self.google_oauth = google_oauth
         self.github_oauth = github_oauth
         self.mcp_runtime = mcp_runtime
+        self.agent_service = agent_service
 
     async def __call__(self, task: TaskRead) -> str:
         if not self.settings.openai_configured:
             raise RuntimeError("AI provider unavailable")
         snapshot = task.agent_profile_snapshot or {}
         instructions = str(snapshot.get("instructions") or "Complete the assigned task carefully using only supplied information.")
+        if self.agent_service is not None and task.agent_profile_id:
+            instructions = self.agent_service.instructions_for_profile(self.user_id, task.agent_profile_id) or instructions
         execution = self.repository.get(self.user_id, self.execution_id)
         dependency_results = {
             candidate.id: candidate.result for candidate in (execution.tasks if execution else [])
@@ -105,7 +109,10 @@ class ExecutionCoordinator:
     async def start(self, user_id: str, conversation_id: str, plan: ExecutionPlan) -> ExecutionRead:
         profile_ids = {task.agent_profile_id for task in plan.tasks if task.agent_profile_id}
         snapshots = {
-            profile_id: profile.model_dump(mode="json")
+            profile_id: {
+                key: value for key, value in profile.model_dump(mode="json").items()
+                if key not in {"skills", "skill_ids"}
+            }
             for profile_id in profile_ids
             if (profile := self.agent_service.get_profile(user_id, profile_id)) is not None and profile.enabled
         }
@@ -124,7 +131,8 @@ class ExecutionCoordinator:
         if execution is None:
             return
         handler = AgentTaskExecutor(self.settings, self.repository, user_id, execution_id,
-                                    self.database, self.tool_registry, self.google_oauth, self.github_oauth, self.mcp_runtime)
+                                    self.database, self.tool_registry, self.google_oauth, self.github_oauth,
+                                    self.mcp_runtime, self.agent_service)
         user_semaphore = self._user_semaphores.setdefault(user_id, asyncio.Semaphore(self.settings.max_parallel_tasks))
 
         async def execute_with_user_limit(task: TaskRead) -> str:

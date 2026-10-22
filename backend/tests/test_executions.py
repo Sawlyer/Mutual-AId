@@ -141,3 +141,50 @@ def test_final_execution_message_is_persisted_once(tmp_path):
     messages = db.list_messages(conversation.id)
     assert len(messages) == 1
     assert messages[0].content == "Résultat final"
+
+
+def test_agent_task_executor_resolves_current_enabled_profile_skills(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.agents.models import AgentProfileCreate, AgentProfileUpdate, AgentSkillCreate, AgentSkillUpdate
+    from app.agents.service import AgentService
+    from app.config import Settings
+    from app.connectors.registry import ConnectorRegistry
+    from app.connectors.tools import ToolRegistry
+    from app.executions import coordinator
+    from app.executions.coordinator import AgentTaskExecutor
+    from app.executions.models import TaskRead
+
+    database = Database(tmp_path / "execution-skills.sqlite3")
+    database.initialize()
+    service = AgentService(database)
+    profile = service.create_profile("owner", AgentProfileCreate(
+        name="Researcher", domain="research", description="Research", instructions="Base instructions.",
+    ))
+    skill = service.create_skill("owner", AgentSkillCreate(name="Citations", instructions="Cite every source."))
+    service.update_profile("owner", profile.id, AgentProfileUpdate(skill_ids=[skill.id]))
+    repo = ExecutionRepository(database)
+    settings = Settings(database_path=database.path, openai_api_key="test-key", openai_model="test-model")
+    captured_instructions = []
+
+    async def fake_run(agent, *_args, **_kwargs):
+        captured_instructions.append(agent.instructions)
+        return SimpleNamespace(final_output="done")
+
+    monkeypatch.setattr(coordinator.Runner, "run", fake_run)
+    executor = AgentTaskExecutor(
+        settings, repo, "owner", "execution-not-created", database, ToolRegistry(ConnectorRegistry()),
+        None, agent_service=service,
+    )
+    task = TaskRead(
+        id="research", title="Research", description="", dependencies=[], capability_ids=[],
+        agent_profile_id=profile.id, agent_profile_snapshot={"name": profile.name, "instructions": profile.instructions},
+        connector_ids=[], expected_output="Notes", approval_required=False, status="ready",
+    )
+
+    asyncio.run(executor(task))
+    service.update_skill("owner", None, skill.id, AgentSkillUpdate(enabled=False))
+    asyncio.run(executor(task))
+
+    assert "Cite every source." in captured_instructions[0]
+    assert "Cite every source." not in captured_instructions[1]
