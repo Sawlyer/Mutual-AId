@@ -31,7 +31,7 @@ class ConnectorRegistry:
                     id="gmail", name="Gmail", icon="mail",
                     description="Rechercher et consulter les e-mails de votre compte.",
                     capabilities=("Rechercher des e-mails", "Lire les messages"),
-                    available_tools=(), availability="coming_soon", auth_provider=auth_provider,
+                    available_tools=(), availability="setup_required", auth_provider=auth_provider,
                     required_scopes=_permissions(
                         ConnectorPermission("gmail.read", "Lecture des e-mails", "Rechercher et lire les messages.", _READ, _GOOGLE_MAIL),
                     ),
@@ -40,14 +40,14 @@ class ConnectorRegistry:
                     id="google_drive", name="Google Drive", icon="drive",
                     description="Rechercher et consulter des fichiers Google Drive.",
                     capabilities=("Rechercher des fichiers", "Consulter les métadonnées"),
-                    available_tools=(), availability="coming_soon", auth_provider=auth_provider,
+                    available_tools=(), availability="setup_required", auth_provider=auth_provider,
                     required_scopes=_permissions(ConnectorPermission("drive.metadata.read", "Lecture des métadonnées", "Rechercher les fichiers et consulter leurs métadonnées, sans lire leur contenu.", _READ, _GOOGLE_DRIVE)),
                 ),
                 Connector(
                     id="google_calendar", name="Google Calendar", icon="calendar",
                     description="Consulter les événements et disponibilités de votre agenda.",
                     capabilities=("Consulter les événements", "Vérifier les disponibilités"),
-                    available_tools=(), availability="coming_soon", auth_provider=auth_provider,
+                    available_tools=(), availability="setup_required", auth_provider=auth_provider,
                     required_scopes=_permissions(
                         ConnectorPermission("calendar.read", "Lecture de l’agenda", "Consulter les événements.", _READ, _GOOGLE_CALENDAR),
                     ),
@@ -56,19 +56,12 @@ class ConnectorRegistry:
                     id="github", name="GitHub", icon="github",
                     description="Consulter des dépôts, issues et demandes de fusion.",
                     capabilities=("Consulter les dépôts", "Lire le contenu autorisé", "Consulter les issues"),
-                    available_tools=(), availability="coming_soon", auth_provider=auth_provider,
+                    available_tools=(), availability="setup_required", auth_provider=auth_provider,
                     required_scopes=_permissions(
                         ConnectorPermission("metadata.read", "Métadonnées des dépôts", "Lister les dépôts accessibles.", _READ),
                         ConnectorPermission("contents.read", "Contenu des dépôts", "Consulter les contenus autorisés.", _READ),
                         ConnectorPermission("issues.read", "Lecture des issues", "Consulter les issues existantes.", _READ),
                     ),
-                ),
-                Connector(
-                    id="custom_mcp", name="Custom MCP Server", icon="mcp",
-                    description="Relier un serveur MCP compatible et approuvé.",
-                    capabilities=("Découvrir des outils MCP", "Appeler les outils autorisés"),
-                    available_tools=(), availability="coming_soon", auth_provider=auth_provider,
-                    required_scopes=_permissions(ConnectorPermission("mcp.tools", "Outils du serveur", "Les outils disponibles dépendent du serveur MCP ajouté.", _READ)),
                 ),
             )
         self._connectors = {}

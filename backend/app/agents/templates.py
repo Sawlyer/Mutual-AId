@@ -4,6 +4,13 @@ from app.agents.models import AgentCapability
 
 
 @dataclass(frozen=True)
+class AgentSkillTemplate:
+    name: str
+    description: str
+    instructions: str
+
+
+@dataclass(frozen=True)
 class AgentTemplate:
     id: str
     name: str
@@ -11,7 +18,8 @@ class AgentTemplate:
     description: str
     instructions: str
     capability: AgentCapability
-    version: int = 1
+    skills: tuple[AgentSkillTemplate, ...]
+    version: int = 2
 
 
 TEMPLATES: dict[str, AgentTemplate] = {
@@ -27,6 +35,15 @@ TEMPLATES: dict[str, AgentTemplate] = {
             "Demande une précision lorsque les préférences ou contraintes sont inconnues."
         ),
         capability=AgentCapability(id="wellness_planning", label="Organisation du bien-être", template_id="wellness-organizer-v1"),
+        skills=(AgentSkillTemplate(
+            name="Organisation de routines bien-être",
+            description="Transformer les objectifs en habitudes réalistes et prudentes.",
+            instructions=(
+                "Aide à découper un objectif général de bien-être en habitudes simples et mesurables. "
+                "Demande les préférences, contraintes et limites utiles avant de proposer un planning. "
+                "Ne pose aucun diagnostic, ne recommande aucun traitement et indique clairement les hypothèses."
+            ),
+        ),),
     ),
     "schedule_planning": AgentTemplate(
         id="schedule-organizer-v1",
@@ -39,6 +56,14 @@ TEMPLATES: dict[str, AgentTemplate] = {
             "Signale les conflits et les hypothèses."
         ),
         capability=AgentCapability(id="schedule_planning", label="Planification d’agenda", template_id="schedule-organizer-v1"),
+        skills=(AgentSkillTemplate(
+            name="Planification selon les contraintes",
+            description="Organiser les tâches selon les disponibilités et les priorités données.",
+            instructions=(
+                "Organise les tâches selon leur priorité, leur durée et les disponibilités fournies. "
+                "Signale les conflits, distingue les faits des hypothèses et demande confirmation avant toute modification d’agenda."
+            ),
+        ),),
     ),
 }
 

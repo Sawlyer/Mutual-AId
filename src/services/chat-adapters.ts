@@ -50,7 +50,7 @@ export interface ChatBackendHealth {
 }
 
 export type ConnectorStatus = 'connected' | 'disconnected' | 'error'
-export type ConnectorAvailability = 'available' | 'setup_required' | 'coming_soon'
+export type ConnectorAvailability = 'available' | 'setup_required'
 export type ConnectorAccess = 'read' | 'write'
 
 export interface ConnectorPermission {
@@ -136,11 +136,10 @@ export interface ChatAdapter {
 }
 
 const demoConnectors: ConnectorCatalogItem[] = [
-  { id: 'gmail', name: 'Gmail', icon: 'mail', description: 'Consulter et organiser les e-mails de votre compte.', capabilities: ['Rechercher des e-mails', 'Lire les messages', 'Préparer des réponses'], available_tools: [], status: 'disconnected', availability: 'coming_soon', required_scopes: [{ id: 'gmail.read', label: 'Lecture des e-mails', description: 'Rechercher et lire les messages.', access: 'read' }, { id: 'gmail.write', label: 'Écriture des e-mails', description: 'Envoyer ou modifier des messages après validation.', access: 'write' }] },
-  { id: 'google_drive', name: 'Google Drive', icon: 'drive', description: 'Rechercher et consulter des fichiers Google Drive.', capabilities: ['Rechercher des fichiers', 'Lire des documents'], available_tools: [], status: 'disconnected', availability: 'coming_soon', required_scopes: [{ id: 'drive.read', label: 'Lecture des fichiers', description: 'Rechercher et lire les fichiers autorisés.', access: 'read' }] },
-  { id: 'google_calendar', name: 'Google Calendar', icon: 'calendar', description: 'Consulter les événements et disponibilités de votre agenda.', capabilities: ['Consulter les événements', 'Vérifier les disponibilités'], available_tools: [], status: 'disconnected', availability: 'coming_soon', required_scopes: [{ id: 'calendar.read', label: 'Lecture de l’agenda', description: 'Consulter les événements.', access: 'read' }] },
-  { id: 'github', name: 'GitHub', icon: 'github', description: 'Consulter des dépôts, issues et demandes de fusion.', capabilities: ['Lire des dépôts', 'Consulter les issues', 'Créer des pull requests'], available_tools: [], status: 'disconnected', availability: 'coming_soon', required_scopes: [{ id: 'github.read', label: 'Lecture des dépôts', description: 'Consulter les dépôts autorisés.', access: 'read' }, { id: 'github.write', label: 'Écriture GitHub', description: 'Créer des issues ou pull requests après validation.', access: 'write' }] },
-  { id: 'custom_mcp', name: 'Custom MCP Server', icon: 'mcp', description: 'Relier un serveur MCP compatible et approuvé.', capabilities: ['Découvrir des outils MCP', 'Appeler les outils autorisés'], available_tools: [], status: 'disconnected', availability: 'coming_soon', required_scopes: [{ id: 'mcp.tools', label: 'Outils du serveur', description: 'Les outils disponibles dépendent du serveur MCP ajouté.', access: 'read' }] },
+  { id: 'gmail', name: 'Gmail', icon: 'mail', description: 'Consulter et organiser les e-mails de votre compte.', capabilities: ['Rechercher des e-mails', 'Lire les messages', 'Préparer des réponses'], available_tools: [], status: 'disconnected', availability: 'setup_required', required_scopes: [{ id: 'gmail.read', label: 'Lecture des e-mails', description: 'Rechercher et lire les messages.', access: 'read' }, { id: 'gmail.write', label: 'Écriture des e-mails', description: 'Envoyer ou modifier des messages après validation.', access: 'write' }] },
+  { id: 'google_drive', name: 'Google Drive', icon: 'drive', description: 'Rechercher et consulter des fichiers Google Drive.', capabilities: ['Rechercher des fichiers', 'Lire des documents'], available_tools: [], status: 'disconnected', availability: 'setup_required', required_scopes: [{ id: 'drive.read', label: 'Lecture des fichiers', description: 'Rechercher et lire les fichiers autorisés.', access: 'read' }] },
+  { id: 'google_calendar', name: 'Google Calendar', icon: 'calendar', description: 'Consulter les événements et disponibilités de votre agenda.', capabilities: ['Consulter les événements', 'Vérifier les disponibilités'], available_tools: [], status: 'disconnected', availability: 'setup_required', required_scopes: [{ id: 'calendar.read', label: 'Lecture de l’agenda', description: 'Consulter les événements.', access: 'read' }] },
+  { id: 'github', name: 'GitHub', icon: 'github', description: 'Consulter des dépôts, issues et demandes de fusion.', capabilities: ['Lire des dépôts', 'Consulter les issues', 'Créer des pull requests'], available_tools: [], status: 'disconnected', availability: 'setup_required', required_scopes: [{ id: 'github.read', label: 'Lecture des dépôts', description: 'Consulter les dépôts autorisés.', access: 'read' }, { id: 'github.write', label: 'Écriture GitHub', description: 'Créer des issues ou pull requests après validation.', access: 'write' }] },
 ]
 
 function asConversation(conversation: BackendConversation): Conversation {

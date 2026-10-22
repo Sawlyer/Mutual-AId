@@ -447,10 +447,29 @@ class Database:
         return self._agent_profile(row)
 
     def ensure_auto_agent_profile(
-        self, user_id: str, capability_id: str, profile_data: dict[str, object]
+        self,
+        user_id: str,
+        capability_id: str,
+        profile_data: dict[str, object],
+        default_skills: list[dict[str, str]] | None = None,
     ) -> dict[str, object]:
-        """Atomically reuse or create the single template profile for a capability."""
+        """Atomically reuse or create a template profile and apply versioned default skills."""
         timestamp = utc_now()
+
+        def add_default_skills(connection: sqlite3.Connection, profile_id: str) -> None:
+            for skill in default_skills or []:
+                skill_id = str(uuid4())
+                connection.execute(
+                    """INSERT INTO agent_skills
+                       (id, user_id, name, description, instructions, enabled, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
+                    (skill_id, user_id, skill["name"], skill["description"], skill["instructions"], timestamp, timestamp),
+                )
+                connection.execute(
+                    "INSERT INTO agent_profile_skills (user_id, profile_id, skill_id, created_at) VALUES (?, ?, ?, ?)",
+                    (user_id, profile_id, skill_id, timestamp),
+                )
+
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
@@ -460,7 +479,20 @@ class Database:
                 (user_id, capability_id),
             ).fetchone()
             if existing is not None:
-                return self._agent_profile(existing)  # type: ignore[return-value]
+                existing_profile = self._agent_profile(existing)
+                assert existing_profile is not None
+                if int(existing_profile["template_version"]) < int(profile_data["template_version"]):
+                    add_default_skills(connection, str(existing_profile["id"]))
+                    connection.execute(
+                        "UPDATE agent_profiles SET template_version = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                        (int(profile_data["template_version"]), timestamp, user_id, str(existing_profile["id"])),
+                    )
+                    refreshed = connection.execute(
+                        "SELECT * FROM agent_profiles WHERE id = ? AND user_id = ?",
+                        (str(existing_profile["id"]), user_id),
+                    ).fetchone()
+                    return self._agent_profile(refreshed)  # type: ignore[return-value]
+                return existing_profile
             connection.execute(
                 """INSERT INTO agent_profiles
                    (id, user_id, name, domain, description, instructions, capability_ids_json,
@@ -476,6 +508,7 @@ class Database:
                 "INSERT INTO auto_agent_capabilities (user_id, capability_id, profile_id, created_at) VALUES (?, ?, ?, ?)",
                 (user_id, capability_id, str(profile_data["id"]), timestamp),
             )
+            add_default_skills(connection, str(profile_data["id"]))
             row = connection.execute(
                 "SELECT * FROM agent_profiles WHERE id = ? AND user_id = ?", (str(profile_data["id"]), user_id)
             ).fetchone()

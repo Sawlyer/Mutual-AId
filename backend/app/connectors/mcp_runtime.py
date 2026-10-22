@@ -98,14 +98,15 @@ class McpRuntime:
     async def refresh_tools(self, user_id: str, server_id: str) -> McpServerRead:
         row = self.service.get_server(user_id, server_id)
         try:
-            async with asyncio.timeout(self.operation_timeout_seconds):
-                await asyncio.to_thread(validate_public_endpoint, str(row["url"]))
-                server = self._make_server(row, approved_names=None)
-                async with server as connected:
-                    remote_tools = await asyncio.wait_for(connected.list_tools(), timeout=self.operation_timeout_seconds)
-                    if len(remote_tools) > MAX_MCP_TOOLS_PER_SERVER:
-                        raise ValueError("MCP server returned too many tools")
-                    tools = [_tool_descriptor(tool).model_dump(mode="json") for tool in remote_tools]
+            try:
+                remote_tools = await asyncio.wait_for(
+                    self._discover_tools(row), timeout=self.operation_timeout_seconds,
+                )
+            except asyncio.TimeoutError as error:
+                raise TimeoutError("MCP discovery timed out") from error
+            if len(remote_tools) > MAX_MCP_TOOLS_PER_SERVER:
+                raise ValueError("MCP server returned too many tools")
+            tools = [_tool_descriptor(tool).model_dump(mode="json") for tool in remote_tools]
             self.database.update_mcp_server_tools(user_id, server_id, tools)
         except Exception as error:
             self.database.update_mcp_server_tools(
@@ -116,6 +117,12 @@ class McpRuntime:
         updated = self.database.get_mcp_server(user_id, server_id)
         assert updated is not None
         return self.service._read(updated)
+
+    async def _discover_tools(self, row: dict[str, object]) -> list[object]:
+        await asyncio.to_thread(validate_public_endpoint, str(row["url"]))
+        server = self._make_server(row, approved_names=None)
+        async with server as connected:
+            return await connected.list_tools()
 
     def validate_selection(self, user_id: str, connector_ids: list[str]) -> None:
         dynamic = [connector_id for connector_id in connector_ids if connector_id.startswith(MCP_CONNECTOR_PREFIX)]
@@ -153,10 +160,15 @@ class McpRuntime:
                 if not approved or not approved.issubset(readable):
                     raise McpAuthorizationError("MCP tools are not approved")
                 try:
-                    async with asyncio.timeout(self.operation_timeout_seconds):
-                        await asyncio.to_thread(validate_public_endpoint, str(row["url"]))
-                        server = self._make_server(row, approved_names=approved)
-                        await stack.enter_async_context(server)
+                    await asyncio.wait_for(
+                        asyncio.to_thread(validate_public_endpoint, str(row["url"])),
+                        timeout=self.operation_timeout_seconds,
+                    )
+                    server = self._make_server(row, approved_names=approved)
+                    await asyncio.wait_for(
+                        stack.enter_async_context(server),
+                        timeout=self.operation_timeout_seconds,
+                    )
                 except Exception as error:
                     logger.warning("MCP connection failed for server %s (%s)", server_id, type(error).__name__)
                     raise McpAuthorizationError("MCP server could not be connected") from error

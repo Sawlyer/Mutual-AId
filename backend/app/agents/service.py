@@ -109,20 +109,28 @@ class AgentService:
         template = TEMPLATES.get(capability_id)
         if template is None:
             return None
+
+        profile_data = {
+            "id": str(uuid4()), "name": template.name, "domain": template.domain,
+            "description": template.description, "instructions": template.instructions,
+            "capability_ids": [capability_id], "template_version": template.version,
+        }
+        default_skills = [
+            {"name": skill.name, "description": skill.description, "instructions": skill.instructions}
+            for skill in template.skills
+        ]
         existing = self.database.get_auto_agent_profile(user_id, capability_id)
         if existing is not None:
-            profile = self._profile_read(user_id, existing)
-            return profile if profile.enabled else None
+            if not existing["enabled"]:
+                return None
+            row = self.database.ensure_auto_agent_profile(user_id, capability_id, profile_data, default_skills)
+            return self._profile_read(user_id, row)
         matching = next((
             row for row in self.database.list_agent_profiles(user_id)
             if row["enabled"] and capability_id in row["capability_ids"]
         ), None)
         if matching is not None:
             return self._profile_read(user_id, matching)
-        row = self.database.ensure_auto_agent_profile(user_id, capability_id, {
-            "id": str(uuid4()), "name": template.name, "domain": template.domain,
-            "description": template.description, "instructions": template.instructions,
-            "capability_ids": [capability_id], "template_version": template.version,
-        })
+        row = self.database.ensure_auto_agent_profile(user_id, capability_id, profile_data, default_skills)
         profile = self._profile_read(user_id, row)
         return profile if profile.enabled else None

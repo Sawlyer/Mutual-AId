@@ -30,13 +30,13 @@ def test_catalog_lists_only_disconnected_connectors_without_tools(tmp_path):
     assert response.status_code == 200
     connectors = {connector["id"]: connector for connector in response.json()}
     assert set(connectors) == {
-        "gmail", "google_drive", "google_calendar", "github", "custom_mcp"
+        "gmail", "google_drive", "google_calendar", "github"
     }
     assert all(connector["status"] == "disconnected" for connector in connectors.values())
     assert connectors["google_calendar"]["availability"] == "setup_required"
     assert all(connectors[connector_id]["availability"] == "setup_required" for connector_id in ("gmail", "google_drive", "google_calendar"))
     assert connectors["github"]["availability"] == "setup_required"
-    assert connectors["custom_mcp"]["availability"] == "coming_soon"
+    assert all(connector["availability"] != "coming_soon" for connector in connectors.values())
     assert all(connector["available_tools"] == [] for connector in connectors.values())
 
 
@@ -739,7 +739,9 @@ def test_calendar_oauth_is_exposed_only_when_server_configuration_is_complete(tm
 def test_registry_marks_calendar_setup_required_until_oauth_is_configured():
     registry = ConnectorRegistry(setup_required_connector_ids={"google_calendar"})
     assert registry.get("google_calendar").availability == "setup_required"
-    assert registry.get("gmail").availability == "coming_soon"
+    assert registry.get("gmail").availability == "setup_required"
+    assert registry.get("github").availability == "setup_required"
+    assert registry.get("custom_mcp") is None
 
 
 def test_calendar_oauth_connect_and_disconnect_require_a_session(tmp_path):

@@ -126,7 +126,7 @@ export function AgentSkillsEditor({ profile, onChange }: AgentSkillsEditorProps)
     </div>
 
     {loading ? <p role="status" className="flex items-center gap-2 py-3 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />Chargement de la bibliothèque…</p>
-      : skills.length === 0 ? <p className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">Aucune compétence personnelle créée.</p>
+      : skills.length === 0 ? <p className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">Votre bibliothèque est vide. Créez une compétence ci-dessous ; les agents spécialisés créés automatiquement reçoivent leurs compétences initiales depuis leur modèle.</p>
         : <ul className="space-y-2" aria-label="Bibliothèque des compétences">
           {skills.map((skill) => {
             const assigned = assignedIds.includes(skill.id)

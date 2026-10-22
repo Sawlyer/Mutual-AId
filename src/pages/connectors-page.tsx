@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CalendarDays, Cable, Check, Clock3, GitBranch, HardDrive, Mail, PlugZap, ShieldCheck, TriangleAlert, type LucideIcon } from 'lucide-react'
+import { CalendarDays, Cable, Check, GitBranch, HardDrive, Mail, PlugZap, ShieldCheck, TriangleAlert, type LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { McpServerCard } from '@/features/connectors/mcp-server-card'
@@ -60,15 +60,15 @@ export function ConnectorsPage() {
         {mcpServers.length > 0 ? <div className="grid gap-3 lg:grid-cols-2">{mcpServers.map((server) => <McpServerCard key={server.id} server={server} onChange={updateMcpServer} onDelete={(serverId) => setMcpServers((current) => current.filter((item) => item.id !== serverId))} />)}</div> : <Card><CardContent className="py-8 text-center text-xs text-muted-foreground">Aucun serveur MCP ajouté pour ce compte.</CardContent></Card>}
       </> : <Card><CardContent className="py-5 text-xs text-muted-foreground">La gestion des serveurs MCP nécessite le backend connecté.</CardContent></Card>}
     </section>
-    <p className="flex items-center gap-2 text-xs text-muted-foreground"><ShieldCheck aria-hidden="true" className="size-4 shrink-0" />Les identifiants et jetons restent côté backend. Les connecteurs en préparation ne sont pas accessibles aux agents.</p>
+    <p className="flex items-center gap-2 text-xs text-muted-foreground"><ShieldCheck aria-hidden="true" className="size-4 shrink-0" />Les identifiants et jetons restent côté backend. Un service devient utilisable après configuration, connexion et sélection dans la conversation.</p>
   </div>
 }
 
 function ConnectorCard({ connector, Icon }: { connector: ConnectorCatalogItem; Icon: LucideIcon }) {
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
-  const comingSoon = connector.availability === 'coming_soon'
   const setupRequired = connector.availability === 'setup_required'
+  const backendRequired = chatAdapter.mode === 'demo'
   const [setupOpen, setSetupOpen] = useState(false)
   const googleConnector = ['gmail', 'google_drive', 'google_calendar'].includes(connector.id)
   const setup = googleConnector
@@ -83,8 +83,8 @@ function ConnectorCard({ connector, Icon }: { connector: ConnectorCatalogItem; I
         <span className="grid size-10 place-items-center rounded-xl border border-border/80 bg-muted/50 text-foreground"><Icon aria-hidden="true" className="size-[18px]" /></span>
         <div className="flex flex-wrap justify-end gap-1.5">
           <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-medium ${statusTone}`}>{connector.status === 'connected' ? <Check className="size-3" /> : connector.status === 'error' ? <TriangleAlert className="size-3" /> : null}{statusLabels[connector.status]}</span>
-          {comingSoon && <span className="inline-flex items-center gap-1 rounded-full border border-primary/15 bg-primary/5 px-2 py-1 text-[10px] font-medium text-primary"><Clock3 aria-hidden="true" className="size-3" />Bientôt disponible</span>}
-          {setupRequired && <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/20 bg-amber-500/5 px-2 py-1 text-[10px] font-medium text-amber-700 dark:text-amber-300"><TriangleAlert aria-hidden="true" className="size-3" />Configuration requise</span>}
+          {backendRequired && <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/20 bg-amber-500/5 px-2 py-1 text-[10px] font-medium text-amber-700 dark:text-amber-300"><TriangleAlert aria-hidden="true" className="size-3" />Backend requis</span>}
+          {!backendRequired && setupRequired && <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/20 bg-amber-500/5 px-2 py-1 text-[10px] font-medium text-amber-700 dark:text-amber-300"><TriangleAlert aria-hidden="true" className="size-3" />Configuration requise</span>}
         </div>
       </div>
       <div><h3 className="font-heading text-base font-semibold">{connector.name}</h3><p className="mt-1 min-h-10 text-xs leading-relaxed text-muted-foreground">{connector.description}</p></div>
@@ -95,7 +95,8 @@ function ConnectorCard({ connector, Icon }: { connector: ConnectorCatalogItem; I
       </div>
       {connector.available_tools.length > 0 && <p className="text-[10px] text-muted-foreground">{connector.available_tools.length} outil(s) réellement disponible(s)</p>}
       {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
-      {setupRequired && setupOpen && <div className="space-y-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-relaxed">
+      {backendRequired && <p className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-muted-foreground">Passez l’adaptateur en mode backend pour connecter ce service. Le mode démo ne réalise aucune connexion OAuth.</p>}
+      {!backendRequired && setupRequired && setupOpen && <div className="space-y-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-relaxed">
         <p className="font-medium text-foreground">{setup.title}</p>
         <ol className="list-decimal space-y-1.5 pl-4 text-muted-foreground">
           {googleConnector ? <li>Dans Google Cloud, active {setup.api} et crée un identifiant OAuth de type application Web.</li> : <li>Dans les paramètres développeur GitHub, crée une OAuth App et configure l’URL d’accueil locale.</li>}
@@ -105,14 +106,14 @@ function ConnectorCard({ connector, Icon }: { connector: ConnectorCatalogItem; I
         <p className="text-muted-foreground">Génère la clé de chiffrement dans le dossier <code>backend/</code> avec <code className="break-all">uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"</code>, puis relance <code>npm run dev:all</code>. Garde les secrets OAuth et la clé uniquement dans le fichier local.</p>
         {googleConnector ? <a className="inline-flex font-medium text-primary underline underline-offset-4" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Ouvrir les identifiants Google Cloud</a> : <a className="inline-flex font-medium text-primary underline underline-offset-4" href="https://github.com/settings/developers" target="_blank" rel="noreferrer">Ouvrir les paramètres développeur GitHub</a>}
       </div>}
-      <Button variant="outline" size="sm" className="w-full" disabled={busy || comingSoon} onClick={() => {
+      <Button variant="outline" size="sm" className="w-full" disabled={busy || backendRequired} onClick={() => {
         if (setupRequired) { setSetupOpen((open) => !open); return }
         setBusy(true); setActionError(null)
         const action = connector.status === 'connected'
           ? chatAdapter.disconnectConnector(connector.id).then(() => window.location.reload())
           : chatAdapter.connectConnector(connector.id).then((url) => { window.location.assign(url) })
         void action.catch((reason: unknown) => setActionError(reason instanceof Error ? reason.message : 'Action impossible.')).finally(() => setBusy(false))
-      }}>{busy ? 'Connexion…' : comingSoon ? 'Bientôt disponible' : setupRequired ? setupOpen ? 'Masquer les étapes' : `Configurer ${googleConnector ? 'Google' : 'GitHub'}` : connector.status === 'connected' ? 'Déconnecter' : 'Connecter'}</Button>
+      }}>{busy ? 'Connexion…' : backendRequired ? 'Backend requis' : setupRequired ? setupOpen ? 'Masquer les étapes' : `Configurer ${googleConnector ? 'Google' : 'GitHub'}` : connector.status === 'connected' ? 'Déconnecter' : 'Connecter'}</Button>
     </CardContent>
   </Card>
 }

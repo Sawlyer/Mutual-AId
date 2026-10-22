@@ -65,7 +65,34 @@ def test_ensure_for_capability_creates_and_reuses_reviewed_profile(tmp_path):
     assert first.origin == "auto_created"
     assert "diagnostic" in first.instructions.lower()
     assert first.capability_ids == ["wellness_planning"]
+    assert len(first.skills) == 1
+    assert first.skill_ids == [first.skills[0].id]
+    assert first.skills[0].name == "Organisation de routines bien-être"
+    assert again.skill_ids == first.skill_ids
+    assert len(service.list_skills("user-a")) == 1
     assert service.ensure_for_capability("user-a", "unknown_capability") is None
+
+
+def test_legacy_auto_agent_receives_its_default_skill_once(tmp_path):
+    from app.agents.service import AgentService
+
+    database = Database(tmp_path / "legacy-agent.sqlite3")
+    database.initialize()
+    database.create_agent_profile("user-a", {
+        **profile_data("legacy-auto"), "origin": "auto_created", "template_version": 1,
+    })
+    database.link_auto_agent_capability("user-a", "wellness_planning", "legacy-auto")
+    service = AgentService(database)
+
+    upgraded = service.ensure_for_capability("user-a", "wellness_planning")
+    assert upgraded is not None
+    assert upgraded.template_version == 2
+    assert [skill.name for skill in upgraded.skills] == ["Organisation de routines bien-être"]
+
+    assert database.delete_agent_skill("user-a", upgraded.skill_ids[0])
+    refreshed = service.ensure_for_capability("user-a", "wellness_planning")
+    assert refreshed is not None
+    assert refreshed.skills == []
 
 
 def test_disabled_profile_is_not_selected_or_recreated(tmp_path):
