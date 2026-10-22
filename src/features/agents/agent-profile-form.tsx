@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { AgentSkillsEditor } from '@/features/agents/agent-skills-editor'
 import type { AgentCapability, AgentProfile, AgentProfileInput } from '@/types/agent'
 
 interface Props {
@@ -11,10 +12,12 @@ interface Props {
   saving: boolean
   onSave: (input: AgentProfileInput) => Promise<void>
   onCancel: () => void
+  onProfileSkillsChange?: (skills: AgentProfile['skills'], skillIds: string[]) => void
 }
 
-export function AgentProfileForm({ capabilities, profile, saving, onSave, onCancel }: Props) {
+export function AgentProfileForm({ capabilities, profile, saving, onSave, onCancel, onProfileSkillsChange }: Props) {
   const [error, setError] = useState('')
+  const [skillIds, setSkillIds] = useState(profile?.skill_ids ?? [])
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
@@ -25,6 +28,7 @@ export function AgentProfileForm({ capabilities, profile, saving, onSave, onCanc
       instructions: String(data.get('instructions') || '').trim(),
       capability_ids: data.getAll('capability').map(String),
       enabled: profile?.enabled ?? true,
+      ...(profile ? { skill_ids: skillIds } : {}),
     }
     if (!input.name || !input.description || !input.instructions || !input.domain) {
       setError('Complétez tous les champs obligatoires.')
@@ -35,7 +39,13 @@ export function AgentProfileForm({ capabilities, profile, saving, onSave, onCanc
     }
   }
 
-  return <form className="space-y-4" onSubmit={(event) => void submit(event)}>
+  function updateSkills(skills: AgentProfile['skills'], ids: string[]) {
+    setSkillIds(ids)
+    onProfileSkillsChange?.(skills, ids)
+  }
+
+  return <div className="space-y-4">
+  <form className="space-y-4" onSubmit={(event) => void submit(event)}>
     <div className="grid gap-4 sm:grid-cols-2">
       <div className="space-y-2"><Label htmlFor="agent-name">Nom</Label><Input id="agent-name" name="name" required maxLength={80} defaultValue={profile?.name} /></div>
       <div className="space-y-2"><Label htmlFor="agent-domain">Domaine</Label><Input id="agent-domain" name="domain" required maxLength={64} pattern="[a-z][-a-z0-9_]*" placeholder="planning" defaultValue={profile?.domain} /></div>
@@ -46,4 +56,6 @@ export function AgentProfileForm({ capabilities, profile, saving, onSave, onCanc
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onCancel}>Annuler</Button><Button type="submit" disabled={saving}>{saving ? 'Enregistrement…' : profile ? 'Enregistrer' : 'Créer l’agent'}</Button></div>
   </form>
+  {profile && <AgentSkillsEditor profile={{ ...profile, skill_ids: skillIds }} onChange={updateSkills} />}
+  </div>
 }

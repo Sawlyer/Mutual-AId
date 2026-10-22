@@ -1,4 +1,4 @@
-import type { AgentCatalog, AgentProfile, AgentProfileInput } from '@/types/agent'
+import type { AgentCatalog, AgentProfile, AgentProfileInput, AgentSkill, AgentSkillInput, AgentSkillUpdate } from '@/types/agent'
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 
@@ -24,4 +24,8 @@ export const agentService = {
   create: (input: AgentProfileInput) => request<AgentProfile>('/agents', { method: 'POST', body: JSON.stringify(input) }),
   update: (id: string, input: Partial<AgentProfileInput>) => request<AgentProfile>(`/agents/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),
   remove: (id: string) => request<void>(`/agents/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  listSkills: () => request<AgentSkill[]>('/agent-skills'),
+  createSkill: (input: AgentSkillInput) => request<AgentSkill>('/agent-skills', { method: 'POST', body: JSON.stringify(input) }),
+  updateSkill: (id: string, input: AgentSkillUpdate) => request<AgentSkill>(`/agent-skills/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  deleteSkill: (id: string) => request<void>(`/agent-skills/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }

@@ -59,6 +59,12 @@ export function AgentsPage() {
     } finally { setSaving(false) }
   }
 
+  function updateEditorSkills(skills: AgentProfile['skills'], skillIds: string[]) {
+    setEditor((current) => current && current !== 'new'
+      ? { ...current, skills, skill_ids: skillIds }
+      : current)
+  }
+
   async function toggle(profile: AgentProfile) {
     setSaving(true)
     try { await agentService.update(profile.id, { enabled: !profile.enabled }); await refresh() }
@@ -77,7 +83,7 @@ export function AgentsPage() {
   return <div className="max-w-4xl space-y-6">
     <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm text-muted-foreground">Spécialistes personnels</p><h2 className="mt-1 font-heading text-2xl font-semibold tracking-tight">Agents</h2><p className="mt-1 max-w-2xl text-sm text-muted-foreground">Les agents spécialisés sont créés depuis des modèles vérifiés lorsque le chat en a besoin. Vous pouvez ensuite les modifier, désactiver ou supprimer.</p></div><Button onClick={() => setEditor('new')} disabled={!!editor}><Plus />Créer un agent</Button></header>
     <Card><CardContent className="flex gap-4 p-4"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><Bot aria-hidden="true" className="size-5" /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-medium">Assistant conversationnel</h3><Badge variant="outline" className={status.style}><StatusIcon aria-hidden="true" className={`mr-1.5 size-3.5 ${connection === 'checking' ? 'animate-spin' : ''}`} />{status.label}</Badge></div><p className="mt-1 text-sm text-muted-foreground">Répond aux demandes et conserve l’historique des conversations.</p>{connection === 'missing' && <p className="mt-3 text-xs text-muted-foreground">Renseignez <code>OPENAI_API_KEY</code> et <code>OPENAI_MODEL</code> dans <code>backend/.env</code>.</p>}{connection === 'offline' && <p role="alert" className="mt-3 text-xs text-destructive">Le backend ne répond pas. Lancez <code>npm run dev:all</code>.</p>}{connection === 'demo' && <p className="mt-3 text-xs text-muted-foreground">Les réponses du chat sont simulées dans ce mode.</p>}</div></CardContent></Card>
-    {editor && <Card><CardContent className="space-y-4 p-5"><div><h3 className="font-semibold">{editor === 'new' ? 'Créer un profil' : `Modifier ${editor.name}`}</h3><p className="text-sm text-muted-foreground">Les profils définissent le rôle et les compétences. Les permissions de connecteurs se règlent séparément.</p></div><AgentProfileForm capabilities={catalog?.capabilities ?? []} profile={editor === 'new' ? undefined : editor} saving={saving} onSave={save} onCancel={() => setEditor(null)} /></CardContent></Card>}
+    {editor && <Card><CardContent className="space-y-4 p-5"><div><h3 className="font-semibold">{editor === 'new' ? 'Créer un profil' : `Modifier ${editor.name}`}</h3><p className="text-sm text-muted-foreground">Les profils définissent le rôle et les compétences. Les permissions de connecteurs se règlent séparément.</p></div><AgentProfileForm key={editor === 'new' ? 'new' : editor.id} capabilities={catalog?.capabilities ?? []} profile={editor === 'new' ? undefined : editor} saving={saving} onSave={save} onCancel={() => setEditor(null)} onProfileSkillsChange={updateEditorSkills} /></CardContent></Card>}
     <section aria-labelledby="specialists-heading" className="space-y-3"><div className="flex items-center justify-between"><h3 id="specialists-heading" className="text-sm font-semibold">Agents spécialisés</h3>{catalog && <span className="text-xs text-muted-foreground">{catalog.profiles.length} profil{catalog.profiles.length === 1 ? '' : 's'}</span>}</div>
       {loading && <div role="status" className="flex items-center gap-2 py-8 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Chargement des agents…</div>}
       {!loading && error && <div role="alert" className="rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">{error}<Button className="ml-3" size="sm" variant="outline" onClick={() => void refresh()}>Réessayer</Button></div>}
