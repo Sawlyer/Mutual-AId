@@ -81,6 +81,31 @@ export interface ConnectorCatalogItem {
   availability: ConnectorAvailability
 }
 
+export interface McpToolInfo {
+  name: string
+  description: string
+  input_schema: Record<string, unknown>
+  access: ConnectorAccess
+  requires_human_approval: boolean
+}
+
+export interface McpServerRecord {
+  id: string
+  name: string
+  url: string
+  status: 'not_checked' | 'ready' | 'error'
+  tools: McpToolInfo[]
+  approved_tool_names: string[]
+  last_checked_at: string | null
+  last_error: string | null
+}
+
+export interface McpServerCreate {
+  name: string
+  url: string
+  auth_token?: string
+}
+
 export interface ConversationConnectorPreferences {
   conversation_id: string
   connector_ids: string[]
@@ -95,6 +120,11 @@ export interface ChatAdapter {
   deleteConversation(conversationId: string): Promise<void>
   listMessages(conversationId: string): Promise<Message[]>
   listConnectors(): Promise<ConnectorCatalogItem[]>
+  listMcpServers(): Promise<McpServerRecord[]>
+  createMcpServer(payload: McpServerCreate): Promise<McpServerRecord>
+  refreshMcpServer(serverId: string): Promise<McpServerRecord>
+  setMcpServerTools(serverId: string, toolNames: string[]): Promise<McpServerRecord>
+  deleteMcpServer(serverId: string): Promise<void>
   connectConnector(connectorId: string): Promise<string>
   disconnectConnector(connectorId: string): Promise<void>
   connectGoogleCalendar(): Promise<string>
@@ -151,6 +181,11 @@ class DemoAdapter implements ChatAdapter {
   async deleteConversation(conversationId: string) { useConversationsStore.getState().deleteConversation(conversationId) }
   async listMessages(conversationId: string) { return useConversationsStore.getState().messages.filter((message) => message.conversationId === conversationId) }
   async listConnectors() { return demoConnectors }
+  async listMcpServers() { return [] }
+  async createMcpServer(): Promise<McpServerRecord> { throw new ChatServiceError('La gestion des serveurs MCP n’est pas disponible en mode démo.') }
+  async refreshMcpServer(): Promise<McpServerRecord> { throw new ChatServiceError('La gestion des serveurs MCP n’est pas disponible en mode démo.') }
+  async setMcpServerTools(): Promise<McpServerRecord> { throw new ChatServiceError('La gestion des serveurs MCP n’est pas disponible en mode démo.') }
+  async deleteMcpServer(): Promise<void> { throw new ChatServiceError('La gestion des serveurs MCP n’est pas disponible en mode démo.') }
   async connectConnector(connectorId: string): Promise<string> { void connectorId; throw new ChatServiceError('Les connecteurs ne sont pas disponibles en mode démo.') }
   async disconnectConnector(connectorId: string): Promise<void> { void connectorId; throw new ChatServiceError('Les connecteurs ne sont pas disponibles en mode démo.') }
   async connectGoogleCalendar() { return this.connectConnector('google_calendar') }
@@ -218,6 +253,30 @@ class OpenAIAdapter implements ChatAdapter {
 
   async listConnectors() {
     return this.request<ConnectorCatalogItem[]>('/connectors')
+  }
+
+  async listMcpServers() {
+    return this.request<McpServerRecord[]>('/connectors/mcp')
+  }
+
+  async createMcpServer(payload: McpServerCreate) {
+    return this.request<McpServerRecord>('/connectors/mcp', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    })
+  }
+
+  async refreshMcpServer(serverId: string) {
+    return this.request<McpServerRecord>(`/connectors/mcp/${encodeURIComponent(serverId)}/refresh`, { method: 'POST' })
+  }
+
+  async setMcpServerTools(serverId: string, toolNames: string[]) {
+    return this.request<McpServerRecord>(`/connectors/mcp/${encodeURIComponent(serverId)}/tools`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool_names: toolNames }),
+    })
+  }
+
+  async deleteMcpServer(serverId: string) {
+    await this.request<void>(`/connectors/mcp/${encodeURIComponent(serverId)}`, { method: 'DELETE' })
   }
 
   async connectConnector(connectorId: string) {

@@ -31,14 +31,14 @@ export function ConnectorSelector({ connectors, selectedIds, onChange }: Connect
             <input type="checkbox" className="sr-only" checked={selected} disabled={!usable} onChange={(event) => onChange(event.target.checked ? [...selectedIds, connector.id] : selectedIds.filter((id) => id !== connector.id))} aria-label={`${selected ? 'Désactiver' : 'Activer'} ${connector.name} pour cette conversation`} />
             <span aria-hidden="true" className={`mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg ${selected ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>{selected ? <Check className="size-4" /> : <Icon className="size-4" />}</span>
             <span className="min-w-0 flex-1">
-              <span className="flex flex-wrap items-center gap-2 text-sm font-medium">{connector.name}<span className={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${usable ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-muted text-muted-foreground'}`}>{connector.status === 'error' ? 'Erreur' : connector.status === 'connected' ? 'Connecté' : 'Déconnecté'}</span>{connector.availability === 'coming_soon' && <span className="rounded-full bg-primary/5 px-1.5 py-0.5 text-[9px] text-primary">Bientôt disponible</span>}</span>
+              <span className="flex flex-wrap items-center gap-2 text-sm font-medium">{connector.name}<span className={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${usable ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-muted text-muted-foreground'}`}>{connector.status === 'error' ? 'Erreur' : usable ? 'Actif' : connector.availability === 'setup_required' && connector.id.startsWith('mcp:') ? 'À approuver' : connector.status === 'connected' ? 'Connecté' : 'Déconnecté'}</span>{connector.availability === 'coming_soon' && <span className="rounded-full bg-primary/5 px-1.5 py-0.5 text-[9px] text-primary">Bientôt disponible</span>}</span>
               <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">{connector.description}</span>
               <span className="mt-2 flex items-start gap-1.5 text-[10px] leading-relaxed text-muted-foreground"><LockKeyhole aria-hidden="true" className="mt-0.5 size-3 shrink-0" /><span>{connector.required_scopes.map((permission) => `${permission.access === 'write' ? 'Écriture' : 'Lecture'} : ${permission.label}`).join(' · ')}</span></span>
             </span>
           </label>
         })}
       </div>}
-      <p role="note" className="text-[11px] leading-relaxed text-muted-foreground">Les connecteurs « bientôt disponibles » ne peuvent pas encore être activés. Les modifications sont enregistrées sur la conversation.</p>
+      <p role="note" className="text-[11px] leading-relaxed text-muted-foreground">Les services doivent être configurés et connectés. Les outils MCP nécessitent une approbation explicite avant utilisation. Les modifications sont enregistrées sur la conversation.</p>
     </DialogContent>
   </Dialog>
 }

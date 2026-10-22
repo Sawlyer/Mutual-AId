@@ -2,13 +2,16 @@ import { useEffect, useState } from 'react'
 import { CalendarDays, Cable, Check, Clock3, GitBranch, HardDrive, Mail, PlugZap, ShieldCheck, TriangleAlert, type LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { chatAdapter, type ConnectorCatalogItem, type ConnectorStatus } from '@/services/chat-adapters'
+import { McpServerCard } from '@/features/connectors/mcp-server-card'
+import { McpServerForm } from '@/features/connectors/mcp-server-form'
+import { chatAdapter, type ConnectorCatalogItem, type ConnectorStatus, type McpServerRecord } from '@/services/chat-adapters'
 
 const icons = { mail: Mail, drive: HardDrive, calendar: CalendarDays, github: GitBranch, mcp: Cable } as const
 const statusLabels: Record<ConnectorStatus, string> = { connected: 'Connecté', disconnected: 'Déconnecté', error: 'Erreur' }
 
 export function ConnectorsPage() {
   const [connectors, setConnectors] = useState<ConnectorCatalogItem[]>([])
+  const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const oauthParams = new URLSearchParams(window.location.search)
@@ -19,12 +22,18 @@ export function ConnectorsPage() {
 
   useEffect(() => {
     let cancelled = false
-    void chatAdapter.listConnectors()
-      .then((items) => { if (!cancelled) { setConnectors(items); setError(null) } })
+    void Promise.all([chatAdapter.listConnectors(), chatAdapter.listMcpServers()])
+      .then(([items, servers]) => { if (!cancelled) { setConnectors(items.filter((item) => !item.id.startsWith('mcp:'))); setMcpServers(servers); setError(null) } })
       .catch((reason: unknown) => { if (!cancelled) setError(reason instanceof Error ? reason.message : 'Le catalogue ne peut pas être chargé.') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [])
+
+  function updateMcpServer(server: McpServerRecord) {
+    setMcpServers((current) => current.some((item) => item.id === server.id)
+      ? current.map((item) => item.id === server.id ? server : item)
+      : [...current, server])
+  }
 
 
   return <div className="mx-auto max-w-5xl space-y-6">
@@ -44,6 +53,13 @@ export function ConnectorsPage() {
     {(error || oauthErrorMessage) && <p role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">{error || oauthErrorMessage}</p>}
     {notice && <p role="status" className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-sm text-emerald-700 dark:text-emerald-300">{notice}</p>}
     {!loading && !error && connectors.length === 0 && <Card><CardContent className="py-12 text-center text-sm text-muted-foreground">Aucun connecteur au catalogue.</CardContent></Card>}
+    <section aria-labelledby="mcp-heading" className="space-y-3 border-t border-border/70 pt-6">
+      <div><p className="text-xs font-medium text-muted-foreground">Extensibilité</p><h3 id="mcp-heading" className="mt-0.5 font-heading text-lg font-semibold">Serveurs MCP personnalisés</h3><p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted-foreground">Les connexions sont isolées par compte. Les outils d’écriture ou non vérifiés restent bloqués.</p></div>
+      {chatAdapter.mode === 'openai' ? <>
+        <McpServerForm onCreated={updateMcpServer} onUpdated={updateMcpServer} />
+        {mcpServers.length > 0 ? <div className="grid gap-3 lg:grid-cols-2">{mcpServers.map((server) => <McpServerCard key={server.id} server={server} onChange={updateMcpServer} onDelete={(serverId) => setMcpServers((current) => current.filter((item) => item.id !== serverId))} />)}</div> : <Card><CardContent className="py-8 text-center text-xs text-muted-foreground">Aucun serveur MCP ajouté pour ce compte.</CardContent></Card>}
+      </> : <Card><CardContent className="py-5 text-xs text-muted-foreground">La gestion des serveurs MCP nécessite le backend connecté.</CardContent></Card>}
+    </section>
     <p className="flex items-center gap-2 text-xs text-muted-foreground"><ShieldCheck aria-hidden="true" className="size-4 shrink-0" />Les identifiants et jetons restent côté backend. Les connecteurs en préparation ne sont pas accessibles aux agents.</p>
   </div>
 }
