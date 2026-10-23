@@ -16,6 +16,9 @@ export default defineConfig({
     },
   },
   server: {
+    watch: process.env.VITE_FS_WATCH_POLLING === 'true'
+      ? { usePolling: true, interval: 1000 }
+      : undefined,
     proxy: {
       '/api': {
         target: apiProxyTarget,

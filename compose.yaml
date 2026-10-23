@@ -1,0 +1,51 @@
+name: mutual-aid
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - path: ./backend/.env.example
+        required: true
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_PATH: /app/backend/data/mutual_aid.sqlite3
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - type: bind
+        source: ./backend/app
+        target: /app/backend/app
+      - type: volume
+        source: mutual-aid-data
+        target: /app/backend/data
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_BASE_URL: /api
+      VITE_API_PROXY_TARGET: http://backend:8000
+      VITE_CHAT_ADAPTER: openai
+      VITE_FS_WATCH_POLLING: "true"
+    ports:
+      - "127.0.0.1:5173:5173"
+    volumes:
+      - type: bind
+        source: ./src
+        target: /app/src
+      - type: bind
+        source: ./index.html
+        target: /app/index.html
+      - type: bind
+        source: ./vite.config.ts
+        target: /app/vite.config.ts
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  mutual-aid-data:

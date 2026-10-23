@@ -2,24 +2,34 @@
 
 Mutual-AId est une interface de chat React + Vite + TypeScript reliée à un backend FastAPI. Le backend utilise le SDK officiel OpenAI Agents, conserve les conversations dans SQLite et peut planifier les demandes complexes en tâches suivies dans un workflow. Google Calendar est disponible en lecture seule lorsque son OAuth est configuré.
 
-## Prérequis
+## Démarrage rapide avec Docker
 
-- Node.js 20.19+ ou 22.12+
-- Python 3.10+
-- [uv](https://docs.astral.sh/uv/)
-- Pour les réponses IA réelles : une clé API OpenAI et un modèle activé sur le projet
+Installez et démarrez Docker Desktop (Windows/macOS) ou Docker Engine avec le plugin Docker Compose (Linux), puis lancez cette même commande depuis la racine du dépôt, dans PowerShell, Terminal ou un terminal Linux/macOS :
 
-## Démarrage rapide
+```bash
+docker compose up --build
+```
 
-Après avoir cloné le projet, lancez cette commande depuis sa racine :
+Docker construit et lance le frontend et le backend. Il n'est pas nécessaire d'installer Node.js, Python, `uv`, npm ou Bash sur la machine hôte. Le premier lancement télécharge les images de base et construit les dépendances ; une connexion Internet est nécessaire.
+
+- Application : <http://127.0.0.1:5173>
+- Backend et documentation API : <http://127.0.0.1:8000/docs>
+
+Pour obtenir de vraies réponses IA, créez `backend/.env` à partir de `backend/.env.example` et renseignez `OPENAI_API_KEY` ainsi que `OPENAI_MODEL`. Compose charge automatiquement ce fichier s'il existe. Les clés restent côté backend et ne sont pas intégrées aux images Docker. Sans clé, les conteneurs démarrent mais le backend ne peut pas fournir de réponses OpenAI.
+
+Les comptes, conversations et sessions SQLite sont conservés dans un volume Docker nommé. **Ctrl+C** arrête le lancement au premier plan sans supprimer les données. `docker compose down` arrête et retire les conteneurs, tout en conservant les données. Pour effacer aussi les données locales, utilisez `docker compose down -v`.
+
+Compose v2.24 ou plus récent est nécessaire pour que le fichier local `backend/.env` soit facultatif. Il est inclus dans Docker Desktop à jour ; sur Linux, installez le plugin Docker Compose correspondant à votre distribution.
+
+## Démarrage natif (sans Docker)
+
+Pour le développement natif, la commande Bash existante reste disponible. Elle nécessite Node.js 20.19+ ou 22.12+, Python 3.10+, `uv` et `curl` :
 
 ```bash
 npm run dev:all
 ```
 
-Elle installe les dépendances si nécessaire, prépare les fichiers d’environnement d’exemple s’ils n’existent pas, puis démarre Vite et FastAPI. Si les deux services tournent déjà, elle détecte leur état et ne crée pas de doublons. Si un seul port est occupé, elle affiche une erreur explicite. **Ctrl+C arrête proprement les deux serveurs.** Ouvrez l’adresse affichée par Vite, généralement `http://127.0.0.1:5173`.
-
-Pour activer les réponses IA, renseignez `OPENAI_API_KEY` et `OPENAI_MODEL` dans `backend/.env`, puis relancez la commande. Les comptes, conversations et sessions sont stockés dans SQLite localement.
+Elle installe les dépendances si nécessaire, prépare les fichiers d’environnement d’exemple s’ils n’existent pas, puis démarre Vite et FastAPI. **Ctrl+C arrête proprement les deux serveurs.** Configurez `backend/.env` comme indiqué ci-dessus pour activer les réponses IA. Les données de ce mode natif restent dans `backend/data/`, séparées du volume Docker.
 
 ## Configuration manuelle
 
