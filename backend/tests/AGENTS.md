@@ -1,0 +1,21 @@
+# Tests backend
+
+S’applique à `backend/tests/`.
+
+Lancer depuis `backend/` :
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest
+```
+
+- Calquer `make_client` dans `test_api.py` : `Settings(database_path=tmp_path / "test.sqlite3")`, `TestClient`, puis `database.initialize()`.
+- Ne pas ouvrir `backend/data/mutual_aid.sqlite3` ni lire `backend/.env`.
+- Un accès d’un autre `user_id` renvoie absence ou 404, comme `test_conversation_access_is_scoped_to_backend_principal` dans `test_connectors.py`.
+- Nommer le fichier `test_<sujet>.py`. Pytest découvre `tests/` via `backend/pyproject.toml`.
+
+```python
+def test_unknown_conversation_returns_404(tmp_path):
+    with make_client(tmp_path) as client:
+        response = client.get("/api/conversations/missing/messages")
+    assert response.status_code == 404
+```

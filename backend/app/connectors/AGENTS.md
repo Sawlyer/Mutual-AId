@@ -1,0 +1,24 @@
+# Connecteurs
+
+S’applique à `backend/app/connectors/`.
+
+Chaque outil est refusé côté serveur tant que `ToolRegistry.tools_for_user` (`tools.py`) n’a pas revérifié la sélection, la connexion et les scopes.
+
+- Accès par défaut : `ToolAccess.READ`.
+- `WRITE` exige des scopes explicites et `requires_human_approval=True`. Sans approbation nommée, l’outil n’est pas fourni à l’agent.
+- Scopes autorisés : `GMAIL_READ_SCOPE`, `DRIVE_METADATA_READ_SCOPE`, `CALENDAR_READ_SCOPE` dans `google_oauth.py`, et `GITHUB_READ_PERMISSIONS` dans `github_oauth.py`. Ne pas demander `CALENDAR_WRITE_SCOPE`.
+- Revérifier la connexion et le scope dans la fonction d’outil, avant tout appel HTTP, comme `google_drive.py`.
+- Ne pas logger de jeton, de secret OAuth ni de corps de credential.
+
+```python
+# Mauvais : l’outil part vers le modèle dès qu’il est enregistré.
+tools.register("gmail", "gmail_send", send, access="write")
+
+# Bon : scope d’écriture et approbation humaine, puis filtre dans tools_for_user.
+tools.register(
+    "gmail", "gmail_send", send,
+    access="write",
+    required_scopes=("gmail.write",),
+    requires_human_approval=True,
+)
+```
