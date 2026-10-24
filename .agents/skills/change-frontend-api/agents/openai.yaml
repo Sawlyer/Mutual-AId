@@ -1,0 +1,4 @@
+interface:
+  display_name: "Contrat frontend et API"
+  short_description: "Modifie le service frontend et la route FastAPI ensemble."
+  default_prompt: "Utilise $change-frontend-api pour modifier ensemble le service frontend et la route FastAPI."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lancer et vérifier"
+  short_description: "Démarre Mutual-AId puis lance typecheck, lint et tests."
+  default_prompt: "Utilise $run-and-verify pour démarrer Mutual-AId et lancer les vérifications."

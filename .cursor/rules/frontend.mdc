@@ -1,6 +1,6 @@
 ---
 description: Conventions frontend React — alias, services et routes
-globs: src/**/*.{ts,tsx}
+globs: src/**/*.ts, src/**/*.tsx
 alwaysApply: false
 ---
 

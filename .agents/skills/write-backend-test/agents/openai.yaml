@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test backend isolé"
+  short_description: "Écrit un test FastAPI isolé, sans base de développement."
+  default_prompt: "Utilise $write-backend-test pour écrire un test FastAPI isolé avec tmp_path."

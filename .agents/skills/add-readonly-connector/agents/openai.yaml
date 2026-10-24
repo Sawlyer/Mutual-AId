@@ -1,0 +1,4 @@
+interface:
+  display_name: "Connecteur en lecture seule"
+  short_description: "Ajoute un connecteur lecture seule et un test de refus."
+  default_prompt: "Utilise $add-readonly-connector pour ajouter un connecteur en lecture seule et son test de refus."

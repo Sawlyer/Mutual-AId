@@ -1,6 +1,6 @@
 # Mutual-AId — contexte pour les agents de code
 
-Ce fichier guide les agents qui modifient le dépôt. Cursor lit aussi `.cursor/rules/` et `.cursor/skills/`. Codex lit ce fichier, puis chaque `AGENTS.md` rencontré jusqu’au dossier courant, et les skills de `.agents/skills/`. Les skills stockées en SQLite (`backend/app/agents/skills.py`) sont des instructions produit : elles n’ont aucun rapport avec ces deux dossiers.
+Ce fichier guide les agents qui modifient le dépôt. Cursor en reprend le même texte dans `.cursor/rules/contexte.mdc` (`alwaysApply: true`) : les deux doivent rester identiques. Cursor lit aussi `.cursor/rules/` et `.cursor/skills/`. Codex lit ce fichier, puis chaque `AGENTS.md` rencontré jusqu’au dossier courant, et les skills de `.agents/skills/`. Les skills stockées en SQLite (`backend/app/agents/skills.py`) sont des instructions produit : elles n’ont aucun rapport avec ces deux dossiers.
 
 ## Stack
 
@@ -11,14 +11,14 @@ Ce fichier guide les agents qui modifient le dépôt. Cursor lit aussi `.cursor/
 
 ## Contexte par dossier
 
-Codex n’ajoute un `AGENTS.md` imbriqué que s’il travaille dans ce dossier ou en dessous. Les lire avant d’éditer le code correspondant :
+Codex n’ajoute un `AGENTS.md` imbriqué que s’il travaille dans ce dossier ou en dessous. Cursor l’ajoute quand un fichier de ce dossier est dans le contexte. Les lire avant d’éditer le code correspondant :
 
 - `src/AGENTS.md` — frontend
 - `backend/AGENTS.md` — secrets, pytest, session
 - `backend/app/connectors/AGENTS.md` — lecture seule et scopes
 - `backend/tests/AGENTS.md` — tests isolés
 
-Les mêmes workflows sont dans `.cursor/skills/` et `.agents/skills/` : `run-and-verify`, `add-readonly-connector`, `write-backend-test`, `change-frontend-api`.
+Les workflows sont dans `.agents/skills/` (lus par Codex et Cursor). `.cursor/skills/` pointe vers ces mêmes dossiers : `run-and-verify`, `add-readonly-connector`, `write-backend-test`, `change-frontend-api`.
 
 ## Où modifier
 
