@@ -175,17 +175,41 @@ class ExecutionCoordinator:
         execution = self.repository.get(user_id, execution_id)
         if execution is None:
             return None
+        if execution.status in {"completed", "partial", "failed", "cancelled", "interrupted"}:
+            return execution
         event = self._cancel.get(execution_id)
         if event:
             event.set()
-        task = self._background.get(execution_id)
-        if task and not task.done():
-            task.cancel()
-        for item in execution.tasks:
-            if item.status in {"pending", "ready", "running"}:
+        background = self._background.get(execution_id)
+        if background and not background.done():
+            background.cancel()
+            await asyncio.gather(background, return_exceptions=True)
+        current = self.repository.get(user_id, execution_id)
+        for item in current.tasks if current else []:
+            if item.status in {"pending", "ready", "running", "awaiting_approval", "validating", "paused"}:
                 self.repository.transition_task(user_id, execution_id, item.id, "cancelled", "Exécution annulée")
         self.repository.set_execution_status(user_id, execution_id, "cancelled", "Exécution annulée")
+        self._persist_final_answer(user_id, execution_id)
         return self.repository.get(user_id, execution_id)
+
+    async def resume(self, user_id: str, execution_id: str) -> ExecutionRead | None:
+        execution = self.repository.get(user_id, execution_id)
+        if execution is None or execution.status != "interrupted":
+            return execution
+        background = self._background.get(execution_id)
+        if background is not None and not background.done():
+            await asyncio.gather(background, return_exceptions=True)
+            execution = self.repository.get(user_id, execution_id)
+            if execution is None or execution.status != "interrupted":
+                return execution
+
+        resumed = self.repository.resume_interrupted(user_id, execution_id)
+        if resumed is None:
+            return None
+        cancel_event = asyncio.Event()
+        self._cancel[execution_id] = cancel_event
+        self._background[execution_id] = asyncio.create_task(self.run(user_id, execution_id, cancel_event))
+        return resumed
 
     async def decide_approval(self, user_id: str, execution_id: str, approval_id: str, decision: str) -> ExecutionRead | None:
         result = self.repository.decide_approval(user_id, execution_id, approval_id, decision)

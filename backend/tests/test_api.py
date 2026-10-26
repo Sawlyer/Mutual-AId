@@ -207,6 +207,86 @@ def test_approval_and_cancellation_api_are_owner_scoped(tmp_path):
         assert other.post(f"/api/executions/{execution.id}/cancel").status_code == 404
 
 
+def test_resume_interrupted_execution_is_owner_scoped(tmp_path):
+    from app.executions.repository import ExecutionRepository
+    from app.planning.schemas import ExecutionPlan, PlannedTask
+
+    with make_client(tmp_path) as owner:
+        conversation = owner.post("/api/conversations", json={}).json()
+        owner_id = owner.get("/api/auth/me").json()["id"]
+        repository = ExecutionRepository(owner.app.state.database)
+        execution = repository.create(owner_id, conversation["id"], ExecutionPlan(
+            summary="Reprise", tasks=[PlannedTask(id="safe", title="Tâche sûre")],
+        ))
+        repository.transition_task(owner_id, execution.id, "safe", "interrupted", "Arrêt du processus")
+        repository.set_execution_status(owner_id, execution.id, "interrupted", "Arrêt du processus")
+
+        async def finish_immediately(*_args):
+            return None
+
+        owner.app.state.execution_coordinator.run = finish_immediately
+        response = owner.post(f"/api/executions/{execution.id}/resume")
+        assert response.status_code == 200
+        assert response.json()["status"] == "running"
+
+        owner.post("/api/auth/logout")
+        owner.post("/api/auth/register", json={
+            "name": "Other user", "email": "other@example.com", "password": "a sufficiently long other password",
+        })
+        assert owner.post(f"/api/executions/{execution.id}/resume").status_code == 404
+
+
+def test_execution_stream_replays_events_and_artifacts_are_downloadable(tmp_path):
+    from app.executions.repository import ExecutionRepository
+    from app.planning.schemas import ExecutionPlan, PlannedTask
+
+    with make_client(tmp_path) as client:
+        conversation = client.post("/api/conversations", json={}).json()
+        owner_id = client.get("/api/auth/me").json()["id"]
+        repository = ExecutionRepository(client.app.state.database)
+        execution = repository.create(
+            owner_id,
+            conversation["id"],
+            ExecutionPlan(summary="Export", tasks=[PlannedTask(id="write", title="Rédiger")]),
+        )
+        initial_cursor = repository.list_events(owner_id, execution.id)[-1].id
+        repository.complete_task(owner_id, execution.id, "write", "Rapport final")
+        repository.set_execution_status(owner_id, execution.id, "completed", "Toutes les tâches sont terminées")
+
+        stream = client.get(
+            f"/api/executions/{execution.id}/stream",
+            headers={"Last-Event-ID": str(initial_cursor)},
+        )
+        event_history = client.get(f"/api/executions/{execution.id}/events").json()
+        listed = client.get(f"/api/executions/{execution.id}/artifacts")
+
+        assert listed.status_code == 200
+        assert len(listed.json()) == 1
+        artifact_id = listed.json()[0]["id"]
+        artifact = client.get(f"/api/executions/{execution.id}/artifacts/{artifact_id}")
+        foreign = client.get(f"/api/executions/{execution.id}/artifacts/not-an-artifact")
+        with TestClient(main.create_app(Settings(database_path=tmp_path / "test.sqlite3"))) as other:
+            other.post("/api/auth/register", json={
+                "name": "Other user", "email": "other@example.com", "password": "another sufficiently long password",
+            })
+            foreign_stream = other.get(f"/api/executions/{execution.id}/stream")
+            foreign_artifact = other.get(f"/api/executions/{execution.id}/artifacts/{artifact_id}")
+
+    assert stream.status_code == 200
+    assert "id:" in stream.text
+    assert "event: execution.event" in stream.text
+    assert "artifact.created" in stream.text
+    assert "event: execution.terminal" in stream.text
+    assert "execution.created" not in stream.text
+    assert all("agent_id" in event and "status" in event for event in event_history)
+    assert event_history[-1]["status"] == "completed"
+    assert artifact.status_code == 200
+    assert artifact.json()["content"] == "Rapport final"
+    assert foreign.status_code == 404
+    assert foreign_stream.status_code == 404
+    assert foreign_artifact.status_code == 404
+
+
 def test_analytics_are_calculated_from_owner_scoped_records(tmp_path):
     from fastapi.testclient import TestClient
     from app.executions.repository import ExecutionRepository

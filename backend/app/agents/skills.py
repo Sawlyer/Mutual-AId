@@ -8,6 +8,8 @@ class AgentSkillRead(BaseModel):
     description: str
     instructions: str
     enabled: bool
+    source: str = "user"
+    catalog_id: str | None = None
     created_at: str
     updated_at: str
 
