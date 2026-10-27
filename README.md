@@ -2,6 +2,18 @@
 
 Mutual-AId est une interface de chat React + Vite + TypeScript reliée à un backend FastAPI. Le backend utilise le SDK officiel OpenAI Agents, conserve les conversations dans SQLite et peut planifier les demandes complexes en tâches suivies dans un workflow. Google Calendar est disponible en lecture seule lorsque son OAuth est configuré.
 
+## Architecture
+
+<p align="center">
+  <a href="./.archify/architecture-mutual-aid-20261027-114110/mutual-aid.html">
+    <img src="./.archify/architecture-mutual-aid-20261027-114110/architecture-preview.png" alt="Architecture de Mutual-AId : chat React, API FastAPI, orchestration Agents SDK, stockage SQLite et connecteurs contrôlés" width="100%">
+  </a>
+  <br>
+  <a href="./.archify/architecture-mutual-aid-20261027-114110/mutual-aid.html"><strong>Télécharger la carte interactive (HTML autonome) →</strong></a>
+</p>
+
+Le schéma source-backed résume le parcours du chat, la séparation entre réponse simple et exécution en DAG, la persistance SQLite et les contrôles d’accès des connecteurs.
+
 Les agents de code s’appuient sur `AGENTS.md` (aussi dans `src/`, `backend/`, `backend/app/connectors/` et `backend/tests/`) et sur `.agents/skills/`. Cursor reprend ce contexte dans `.cursor/rules/` et `.cursor/skills/`. Ce README reste le guide d’installation.
 
 ## Démarrage rapide avec Docker

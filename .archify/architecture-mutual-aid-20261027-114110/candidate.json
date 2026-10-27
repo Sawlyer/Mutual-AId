@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Architecture de Mutual-AId",
+    "output": ".archify/architecture-mutual-aid-20261027-114110/mutual-aid.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/Sawlyer/Mutual-AId.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "bbd0a72bc8bee4a6523a482b4c13d527381cbf92"
+    }
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "Utilisateur",
+      "sublabel": "Chat en langage naturel",
+      "pos": [40, 330],
+      "size": [130, 72],
+      "sources": [
+        { "path": "src/features/chat/chat-page.tsx", "line": 77, "end_line": 110, "label": "Entrée du chat" }
+      ]
+    },
+    {
+      "id": "frontend",
+      "type": "frontend",
+      "label": "Application web",
+      "sublabel": "React · Vite · TypeScript",
+      "pos": [205, 330],
+      "size": [160, 76],
+      "sources": [
+        { "path": "src/app/router.tsx", "line": 6, "end_line": 24, "label": "Routes applicatives" },
+        { "path": "src/services/chat-adapters.ts", "line": 307, "end_line": 355, "label": "Client de chat SSE" }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "API conversationnelle",
+      "sublabel": "FastAPI · session · SSE",
+      "pos": [420, 330],
+      "size": [175, 82],
+      "sources": [
+        { "path": "backend/app/main.py", "line": 103, "end_line": 111, "label": "Session utilisateur" },
+        { "path": "backend/app/main.py", "line": 510, "end_line": 556, "label": "Route chat et orchestration" },
+        { "path": "compose.yaml", "line": 3, "end_line": 23, "label": "Service backend" }
+      ]
+    },
+    {
+      "id": "agents_sdk",
+      "type": "backend",
+      "label": "Runtime Agents SDK",
+      "pos": [650, 125],
+      "size": [175, 82],
+      "sublabel": "Chat · plans · tâches",
+      "sources": [
+        { "path": "backend/app/agent.py", "line": 27, "end_line": 65, "label": "Assistant en streaming" },
+        { "path": "backend/app/planning/service.py", "line": 61, "end_line": 85, "label": "Plan structuré et validé" },
+        { "path": "backend/app/executions/coordinator.py", "line": 73, "end_line": 90, "label": "Exécution d’un agent par tâche" }
+      ]
+    },
+    {
+      "id": "execution",
+      "type": "backend",
+      "label": "Moteur d’exécution",
+      "sublabel": "DAG · tâches parallèles · reprises bornées",
+      "pos": [650, 490],
+      "size": [175, 82],
+      "sources": [
+        { "path": "backend/app/executions/coordinator.py", "line": 109, "end_line": 145, "label": "Lancement et coordination" },
+        { "path": "backend/app/executions/scheduler.py", "line": 77, "end_line": 125, "label": "Ordonnancement du DAG" }
+      ]
+    },
+    {
+      "id": "storage",
+      "type": "database",
+      "label": "SQLite persistant",
+      "sublabel": "Comptes · messages · exécutions · artefacts",
+      "pos": [420, 700],
+      "size": [175, 82],
+      "sources": [
+        { "path": "backend/app/db.py", "line": 42, "end_line": 56, "label": "Conversations et messages" },
+        { "path": "backend/app/db.py", "line": 197, "end_line": 255, "label": "Événements et artefacts" },
+        { "path": "backend/app/executions/repository.py", "line": 69, "end_line": 103, "label": "Persistance des exécutions" }
+      ]
+    },
+    {
+      "id": "openai",
+      "type": "external",
+      "label": "OpenAI",
+      "sublabel": "Modèle configuré côté serveur",
+      "pos": [1200, 125],
+      "size": [130, 78],
+      "sources": [
+        { "path": "backend/app/agent.py", "line": 22, "end_line": 34, "label": "Clé et modèle configurés" },
+        { "path": "backend/app/planning/service.py", "line": 61, "end_line": 69, "label": "Appel Runner du planificateur" }
+      ]
+    },
+    {
+      "id": "tool_policy",
+      "type": "security",
+      "label": "Filtre d’autorisations",
+      "sublabel": "Connexion · scopes · outils approuvés",
+      "pos": [945, 490],
+      "size": [170, 82],
+      "sources": [
+        { "path": "backend/app/connectors/tools.py", "line": 62, "end_line": 94, "label": "Vérification par utilisateur" },
+        { "path": "backend/app/main.py", "line": 513, "end_line": 524, "label": "Connecteurs de la conversation" },
+        { "path": "backend/app/connectors/mcp_runtime.py", "line": 145, "end_line": 176, "label": "Outils MCP approuvés" }
+      ]
+    },
+    {
+      "id": "connectors",
+      "type": "external",
+      "label": "Services connectés",
+      "sublabel": "Google · GitHub · serveurs MCP",
+      "pos": [1210, 490],
+      "size": [145, 82],
+      "sources": [
+        { "path": "backend/app/connectors/google_gmail.py", "line": 55, "end_line": 71, "label": "Outil Gmail en lecture" },
+        { "path": "backend/app/connectors/github_api.py", "line": 24, "end_line": 45, "label": "API GitHub autorisée" },
+        { "path": "backend/app/connectors/mcp_runtime.py", "line": 145, "end_line": 176, "label": "Connexion MCP approuvée" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Déploiement Docker Compose",
+      "wraps": ["frontend", "api", "agents_sdk", "execution", "storage", "tool_policy"]
+    }
+  ],
+  "connections": [
+    { "id": "user-to-frontend", "from": "user", "to": "frontend", "label": "chat", "variant": "emphasis" },
+    { "id": "frontend-to-api", "from": "frontend", "to": "api", "label": "POST", "variant": "emphasis" },
+    { "id": "api-to-agents", "from": "api", "to": "agents_sdk", "label": "plan" },
+    { "id": "api-to-execution", "from": "api", "to": "execution", "label": "DAG", "variant": "emphasis" },
+    { "id": "agents-to-openai", "from": "agents_sdk", "to": "openai", "label": "inférence" },
+    { "id": "execution-to-agents", "from": "execution", "to": "agents_sdk", "label": "Runner · tâche" },
+    { "id": "api-to-storage", "from": "api", "to": "storage", "label": "comptes · messages", "variant": "default" },
+    { "id": "execution-to-storage", "from": "execution", "to": "storage", "label": "état · événements", "variant": "default" },
+    { "id": "execution-to-policy", "from": "execution", "to": "tool_policy", "label": "outils autorisés", "variant": "security" },
+    { "id": "policy-to-connectors", "from": "tool_policy", "to": "connectors", "label": "OAuth/MCP", "variant": "security" }
+  ],
+  "cards": [
+    {
+      "dot": "violet",
+      "title": "Du chat à l’exécution",
+      "items": [
+        "Les demandes simples reçoivent une réponse en streaming.",
+        "Les demandes complexes deviennent un plan validé puis des tâches dépendantes."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Permissions vérifiées côté serveur",
+      "items": [
+        "Un connecteur doit être actif et sélectionné pour la conversation.",
+        "Les scopes OAuth et les outils MCP approuvés sont vérifiés avant leur usage."
+      ]
+    }
+  ]
+}
