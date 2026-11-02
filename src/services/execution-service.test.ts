@@ -68,6 +68,9 @@ describe('executionService', () => {
 
     const unsubscribe = executionService.subscribe('execution-1', handlers)
     const source = MockEventSource.instance
+    source.dispatchEvent(new MessageEvent('execution.unknown', { data: JSON.stringify({ future_payload: true }) }))
+    expect(handlers.onEvent).not.toHaveBeenCalled()
+    expect(source.closed).toBe(false)
     source.dispatchEvent(new MessageEvent('execution.event', {
       data: JSON.stringify({ id: 7, task_id: 'task-1', agent_id: 'agent-alpha', event_type: 'task.started', status: 'running', message: 'Démarrée', created_at: 'now' }),
     }))
