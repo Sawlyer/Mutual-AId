@@ -10,7 +10,7 @@ from app.db import Database
 
 
 def test_build_assistant_without_mcp_servers_uses_empty_mcp_config():
-    settings = Settings(openai_api_key="test-key", openai_model="test-model")
+    settings = Settings(_env_file=None, openai_api_key="test-key", openai_model="test-model")
 
     assistant = agent_module.build_assistant(settings)
 
