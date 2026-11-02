@@ -333,7 +333,7 @@ class ExecutionRepository:
         timestamp = utc_now()
         with self.database.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            active = connection.execute("SELECT id, user_id FROM executions WHERE status IN ('planning', 'running', 'awaiting_approval')").fetchall()
+            active = connection.execute("SELECT id, user_id FROM executions WHERE status IN ('planning', 'running', 'pausing', 'awaiting_approval')").fetchall()
             for execution in active:
                 connection.execute(
                     "UPDATE execution_tasks SET status = 'interrupted', updated_at = ? WHERE execution_id = ? AND user_id = ? AND status = 'running'",

@@ -44,6 +44,7 @@ from app.schemas import (
     ConversationRead,
     ConversationRename,
     AuthLogin,
+    AuthAccountDelete,
     AuthRegister,
     AuthUserRead,
     AgentCatalogRead,
@@ -166,6 +167,52 @@ async def logout(request: Request, response: Response, database: Db, settings: A
     token = request.cookies.get(settings.auth_cookie_name)
     if token:
         database.delete_auth_session(token_digest(token))
+    response.delete_cookie(settings.auth_cookie_name, path="/api", httponly=True, secure=settings.auth_cookie_secure, samesite="lax")
+    response.status_code = 204
+    return response
+
+
+@router.delete("/auth/account", status_code=204, dependencies=[Depends(rate_limit), TrustedOrigin],
+               summary="Supprimer le compte et ses données")
+async def delete_account(
+    payload: AuthAccountDelete,
+    request: Request,
+    response: Response,
+    database: Db,
+    settings: AppSettings,
+    user: CurrentUser,
+) -> Response:
+    account = database.get_user_by_email(user.email)
+    if account is None or not verify_password(payload.password, account["password_hash"]):
+        raise HTTPException(status_code=401, detail="Mot de passe incorrect.")
+
+    # Revoke provider grants before deleting their encrypted credentials. The database
+    # performs the active-execution check again atomically before removing the account.
+    if database.user_has_active_executions(user.id):
+        raise HTTPException(status_code=409, detail="Terminez ou mettez en pause les exécutions avant de supprimer le compte.")
+
+    github_oauth: GitHubAppOAuthClient | None = request.app.state.github_oauth
+    if github_oauth and database.get_connector_credentials(user.id, "github"):
+        try:
+            await github_oauth.revoke(user.id)
+        except Exception as error:
+            logger.warning("GitHub grant revocation failed during account deletion for user %s (%s)", user.id, type(error).__name__)
+
+    google_oauth: GoogleOAuthClient | None = request.app.state.google_oauth
+    if google_oauth:
+        for connector_id in GOOGLE_CONNECTOR_SCOPES:
+            if database.get_connector_credentials(user.id, connector_id):
+                try:
+                    await google_oauth.revoke(user.id, connector_id)
+                except Exception as error:
+                    logger.warning("Google grant revocation failed during account deletion for user %s (%s)", user.id, type(error).__name__)
+
+    result = database.delete_user_account(user.id)
+    if result == "active_executions":
+        raise HTTPException(status_code=409, detail="Une exécution a démarré. Réessayez après sa fin.")
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="Compte introuvable.")
+
     response.delete_cookie(settings.auth_cookie_name, path="/api", httponly=True, secure=settings.auth_cookie_secure, samesite="lax")
     response.status_code = 204
     return response
@@ -402,6 +449,14 @@ async def decide_execution_approval(execution_id: str, approval_id: str, payload
 @router.post("/executions/{execution_id}/cancel", summary="Annuler une exécution")
 async def cancel_execution(execution_id: str, request: Request, user: CurrentUser):
     execution = await request.app.state.execution_coordinator.cancel(user.id, execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Exécution introuvable.")
+    return execution
+
+
+@router.post("/executions/{execution_id}/pause", summary="Mettre en pause une exécution")
+async def pause_execution(execution_id: str, request: Request, user: CurrentUser):
+    execution = await request.app.state.execution_coordinator.pause(user.id, execution_id)
     if execution is None:
         raise HTTPException(status_code=404, detail="Exécution introuvable.")
     return execution

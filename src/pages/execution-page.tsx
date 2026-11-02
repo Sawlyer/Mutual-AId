@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, CircleAlert, Clock3, Download, LoaderCircle, Play, Square, Workflow } from 'lucide-react'
+import { ArrowLeft, CircleAlert, Clock3, Download, LoaderCircle, Pause, Play, Square, Workflow } from 'lucide-react'
 import { Link, useParams } from 'react-router'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -12,6 +12,8 @@ const terminal = new Set<Execution['status']>(['completed', 'partial', 'failed',
 const executionStatusLabels: Record<Execution['status'], string> = {
   planning: 'Planification',
   running: 'En cours',
+  pausing: 'Mise en pause',
+  paused: 'En pause',
   awaiting_approval: 'Approbation requise',
   completed: 'Terminée',
   partial: 'Partielle',
@@ -35,6 +37,8 @@ const taskStatusLabels: Record<string, string> = {
 const eventLabels: Record<string, string> = {
   'execution.created': 'Exécution créée',
   'execution.running': 'Exécution démarrée',
+  'execution.pausing': 'Mise en pause demandée',
+  'execution.paused': 'Exécution mise en pause',
   'execution.awaiting_approval': 'Une action attend votre approbation',
   'execution.completed': 'Exécution terminée',
   'execution.partial': 'Exécution partielle',
@@ -166,6 +170,13 @@ export function ExecutionPage() {
     finally { setBusy(false) }
   }
 
+  async function pause() {
+    setBusy(true)
+    try { setExecution(await executionService.pause(executionId)); setError('') }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'La mise en pause a échoué.') }
+    finally { setBusy(false) }
+  }
+
   async function resume() {
     setBusy(true)
     try {
@@ -245,10 +256,22 @@ export function ExecutionPage() {
                 Annuler l’exécution
               </Button>
             )}
-            {execution.status === 'interrupted' && (
+            {(execution.status === 'running' || execution.status === 'awaiting_approval') && (
+              <Button variant="outline" size="sm" disabled={busy} onClick={() => void pause()}>
+                <Pause />
+                Mettre en pause
+              </Button>
+            )}
+            {execution.status === 'pausing' && (
+              <Button variant="outline" size="sm" disabled>
+                <LoaderCircle className="animate-spin" />
+                Mise en pause…
+              </Button>
+            )}
+            {(execution.status === 'interrupted' || execution.status === 'paused') && (
               <Button size="sm" disabled={busy} onClick={() => void resume()}>
                 {busy ? <LoaderCircle className="animate-spin" /> : <Play />}
-                Reprendre l’exécution
+                {execution.status === 'paused' ? 'Reprendre' : 'Reprendre l’exécution'}
               </Button>
             )}
             <span role="status" className="ml-auto text-xs text-muted-foreground">

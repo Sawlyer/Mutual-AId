@@ -70,5 +70,6 @@ export const executionService = {
   },
   decide: (id: string, approvalId: string, decision: 'approve' | 'reject') => request<Execution>(`/executions/${encodeURIComponent(id)}/approvals/${encodeURIComponent(approvalId)}`, { method: 'POST', body: JSON.stringify({ decision }) }),
   cancel: (id: string) => request<Execution>(`/executions/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  pause: (id: string) => request<Execution>(`/executions/${encodeURIComponent(id)}/pause`, { method: 'POST' }),
   resume: (id: string) => request<Execution>(`/executions/${encodeURIComponent(id)}/resume`, { method: 'POST' }),
 }
