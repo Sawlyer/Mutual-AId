@@ -9,6 +9,14 @@ from app.config import Settings
 from app.db import Database
 
 
+def test_build_assistant_without_mcp_servers_uses_empty_mcp_config():
+    settings = Settings(openai_api_key="test-key", openai_model="test-model")
+
+    assistant = agent_module.build_assistant(settings)
+
+    assert assistant.mcp_config == {}
+
+
 def test_assistant_stream_uses_runner_and_persists_sdk_session(tmp_path, monkeypatch):
     database_path = tmp_path / "agent.sqlite3"
     Database(database_path).initialize()

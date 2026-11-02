@@ -30,7 +30,7 @@ def build_assistant(settings: Settings, tools: Sequence[object] = (), mcp_server
     return Agent(
         name="Assistant", instructions=ASSISTANT_INSTRUCTIONS, model=settings.openai_model.strip(),
         tools=list(tools), mcp_servers=list(mcp_servers),
-        mcp_config={"include_server_in_tool_names": True, "failure_error_function": None} if mcp_servers else None,
+        mcp_config={"include_server_in_tool_names": True, "failure_error_function": None} if mcp_servers else {},
     )
 
 
