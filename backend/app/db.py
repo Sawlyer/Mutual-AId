@@ -199,7 +199,9 @@ class Database:
                     execution_id TEXT NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
                     user_id TEXT NOT NULL,
                     task_id TEXT,
+                    agent_id TEXT,
                     event_type TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'unknown',
                     message TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
@@ -214,6 +216,7 @@ class Database:
                     finished_at TEXT,
                     error TEXT
                 );
+                CREATE INDEX IF NOT EXISTS execution_attempts_task ON execution_attempts(execution_id, task_id, attempt_number);
                 CREATE TABLE IF NOT EXISTS execution_approvals (
                     id TEXT PRIMARY KEY,
                     execution_id TEXT NOT NULL,
@@ -244,6 +247,7 @@ class Database:
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS execution_artifacts_cursor ON execution_artifacts(user_id, execution_id, created_at);
                 CREATE TABLE IF NOT EXISTS execution_final_messages (
                     execution_id TEXT PRIMARY KEY REFERENCES executions(id) ON DELETE CASCADE,
                     user_id TEXT NOT NULL,
@@ -263,6 +267,20 @@ class Database:
                 connection.execute("ALTER TABLE execution_tasks ADD COLUMN agent_profile_snapshot_json TEXT")
             if "approval_id" not in task_columns:
                 connection.execute("ALTER TABLE execution_tasks ADD COLUMN approval_id TEXT")
+            event_columns = {row["name"] for row in connection.execute("PRAGMA table_info(execution_events)")}
+            if "agent_id" not in event_columns:
+                connection.execute("ALTER TABLE execution_events ADD COLUMN agent_id TEXT")
+            if "status" not in event_columns:
+                connection.execute("ALTER TABLE execution_events ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
+            agent_skill_columns = {row["name"] for row in connection.execute("PRAGMA table_info(agent_skills)")}
+            if "catalog_id" not in agent_skill_columns:
+                connection.execute("ALTER TABLE agent_skills ADD COLUMN catalog_id TEXT")
+            if "source" not in agent_skill_columns:
+                connection.execute("ALTER TABLE agent_skills ADD COLUMN source TEXT NOT NULL DEFAULT 'user'")
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS agent_skills_catalog_owner "
+                "ON agent_skills(user_id, catalog_id) WHERE catalog_id IS NOT NULL"
+            )
             oauth_state_columns = {row["name"] for row in connection.execute("PRAGMA table_info(connector_oauth_states)")}
             if "connector_id" not in oauth_state_columns:
                 connection.execute("ALTER TABLE connector_oauth_states ADD COLUMN connector_id TEXT NOT NULL DEFAULT 'google_calendar'")

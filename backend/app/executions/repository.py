@@ -2,9 +2,11 @@ import json
 from uuid import uuid4
 
 from app.db import Database, utc_now
-from app.executions.models import ExecutionEventRead, ExecutionRead, TaskRead
+from app.executions.models import ExecutionArtifactContent, ExecutionArtifactRead, ExecutionEventRead, ExecutionRead, TaskRead
 from app.planning.schemas import ExecutionPlan
 from app.schemas import MessageRead
+
+MAX_ARTIFACT_BYTES = 1_048_576
 
 
 class ExecutionRepository:
@@ -12,7 +14,32 @@ class ExecutionRepository:
         self.database = database
 
     @staticmethod
+    def _record_event(connection, user_id: str, execution_id: str, task_id: str | None,
+                      event_type: str, message: str, timestamp: str, status: str | None = None) -> None:
+        if task_id is not None:
+            task = connection.execute(
+                "SELECT agent_profile_id, status FROM execution_tasks WHERE user_id = ? AND execution_id = ? AND id = ?",
+                (user_id, execution_id, task_id),
+            ).fetchone()
+            agent_id = task["agent_profile_id"] if task else None
+            event_status = status or (task["status"] if task else "unknown")
+        else:
+            execution = connection.execute(
+                "SELECT status FROM executions WHERE user_id = ? AND id = ?",
+                (user_id, execution_id),
+            ).fetchone()
+            agent_id = None
+            event_status = status or (execution["status"] if execution else "unknown")
+        connection.execute(
+            """INSERT INTO execution_events
+               (execution_id, user_id, task_id, agent_id, event_type, status, message, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (execution_id, user_id, task_id, agent_id, event_type, event_status, message, timestamp),
+        )
+
+    @staticmethod
     def _task(row) -> TaskRead:
+        attempts = row["attempts"] if "attempts" in row.keys() else 0
         return TaskRead(
             id=row["id"], title=row["title"], description=row["description"],
             dependencies=json.loads(row["dependencies_json"]), capability_ids=json.loads(row["capability_ids_json"]),
@@ -21,14 +48,19 @@ class ExecutionRepository:
             approval_id=row["approval_id"],
             connector_ids=json.loads(row["connector_ids_json"]),
             expected_output=row["expected_output"], approval_required=bool(row["approval_required"]),
-            status=row["status"], result=row["result"], error=row["error"],
+            status=row["status"], attempts=attempts, result=row["result"], error=row["error"],
         )
 
     def _read(self, connection, user_id: str, execution_id: str) -> ExecutionRead | None:
         row = connection.execute("SELECT * FROM executions WHERE user_id = ? AND id = ?", (user_id, execution_id)).fetchone()
         if row is None:
             return None
-        tasks = connection.execute("SELECT * FROM execution_tasks WHERE user_id = ? AND execution_id = ? ORDER BY rowid", (user_id, execution_id)).fetchall()
+        tasks = connection.execute(
+            """SELECT t.*, (SELECT COUNT(*) FROM execution_attempts a
+               WHERE a.execution_id = t.execution_id AND a.task_id = t.id) AS attempts
+               FROM execution_tasks t WHERE t.user_id = ? AND t.execution_id = ? ORDER BY t.rowid""",
+            (user_id, execution_id),
+        ).fetchall()
         return ExecutionRead(
             id=row["id"], conversation_id=row["conversation_id"], status=row["status"], summary=row["summary"],
             tasks=[self._task(task) for task in tasks], created_at=row["created_at"], updated_at=row["updated_at"],
@@ -65,10 +97,7 @@ class ExecutionRepository:
                         "INSERT INTO execution_approvals (id, execution_id, task_id, user_id, decision, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
                         (approval_id, execution_id, task.id, user_id, timestamp),
                     )
-            connection.execute(
-                "INSERT INTO execution_events (execution_id, user_id, event_type, message, created_at) VALUES (?, ?, ?, ?, ?)",
-                (execution_id, user_id, "execution.created", plan.summary, timestamp),
-            )
+            self._record_event(connection, user_id, execution_id, None, "execution.created", plan.summary, timestamp)
             result = self._read(connection, user_id, execution_id)
         assert result is not None
         return result
@@ -85,12 +114,12 @@ class ExecutionRepository:
             ).fetchall()
             return [item for row in rows if (item := self._read(connection, user_id, row["id"])) is not None]
 
-    def transition_task(self, user_id: str, execution_id: str, task_id: str, status: str, detail: str | None = None) -> TaskRead:
+    def transition_task(self, user_id: str, execution_id: str, task_id: str, status: str, detail: str | None = None, event_type: str | None = None) -> TaskRead:
         allowed = {"pending", "ready", "running", "awaiting_approval", "validating", "completed", "failed", "blocked", "paused", "interrupted", "cancelled"}
         if status not in allowed:
             raise ValueError("Unknown task status")
         timestamp = utc_now()
-        event_type = {"running": "task.started", "completed": "task.completed", "failed": "task.failed", "awaiting_approval": "approval.required"}.get(status, "task.updated")
+        event_type = event_type or {"running": "task.started", "ready": "task.ready", "validating": "task.validating", "completed": "task.completed", "failed": "task.failed", "blocked": "task.blocked", "cancelled": "task.cancelled", "awaiting_approval": "approval.required"}.get(status, "task.updated")
         with self.database.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
@@ -99,10 +128,7 @@ class ExecutionRepository:
             )
             if cursor.rowcount != 1:
                 raise LookupError("Task not found")
-            connection.execute(
-                "INSERT INTO execution_events (execution_id, user_id, task_id, event_type, message, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (execution_id, user_id, task_id, event_type, detail or status, timestamp),
-            )
+            self._record_event(connection, user_id, execution_id, task_id, event_type, detail or status, timestamp, status)
             row = connection.execute(
                 "SELECT * FROM execution_tasks WHERE user_id = ? AND execution_id = ? AND id = ?",
                 (user_id, execution_id, task_id),
@@ -133,9 +159,17 @@ class ExecutionRepository:
             )
 
     def complete_task(self, user_id: str, execution_id: str, task_id: str, result: str) -> TaskRead:
+        if len(result.encode("utf-8")) > MAX_ARTIFACT_BYTES:
+            raise ValueError("Task result exceeds the artifact storage limit")
         timestamp = utc_now()
         with self.database.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            task = connection.execute(
+                "SELECT title FROM execution_tasks WHERE user_id = ? AND execution_id = ? AND id = ?",
+                (user_id, execution_id, task_id),
+            ).fetchone()
+            if task is None:
+                raise LookupError("Task not found")
             cursor = connection.execute(
                 "UPDATE execution_tasks SET result = ?, status = 'completed', updated_at = ? WHERE user_id = ? AND execution_id = ? AND id = ?",
                 (result, timestamp, user_id, execution_id, task_id),
@@ -144,12 +178,10 @@ class ExecutionRepository:
                 raise LookupError("Task not found")
             connection.execute(
                 "INSERT INTO execution_artifacts (id, execution_id, task_id, user_id, name, media_type, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (str(uuid4()), execution_id, task_id, user_id, "Résultat", "text/plain", result, timestamp),
+                (artifact_id := str(uuid4()), execution_id, task_id, user_id, task["title"][:160], "text/plain; charset=utf-8", result, timestamp),
             )
-            connection.execute(
-                "INSERT INTO execution_events (execution_id, user_id, task_id, event_type, message, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (execution_id, user_id, task_id, "task.completed", "Tâche terminée", timestamp),
-            )
+            self._record_event(connection, user_id, execution_id, task_id, "task.completed", "Tâche terminée", timestamp, "completed")
+            self._record_event(connection, user_id, execution_id, task_id, "artifact.created", artifact_id, timestamp, "completed")
             row = connection.execute("SELECT * FROM execution_tasks WHERE user_id = ? AND execution_id = ? AND id = ?", (user_id, execution_id, task_id)).fetchone()
             connection.execute("UPDATE executions SET updated_at = ? WHERE user_id = ? AND id = ?", (timestamp, user_id, execution_id))
         return self._task(row)
@@ -161,7 +193,7 @@ class ExecutionRepository:
             cursor = connection.execute("UPDATE executions SET status = ?, updated_at = ? WHERE user_id = ? AND id = ?", (status, timestamp, user_id, execution_id))
             if cursor.rowcount != 1:
                 raise LookupError("Execution not found")
-            connection.execute("INSERT INTO execution_events (execution_id, user_id, event_type, message, created_at) VALUES (?, ?, ?, ?, ?)", (execution_id, user_id, f"execution.{status}", detail, timestamp))
+            self._record_event(connection, user_id, execution_id, None, f"execution.{status}", detail, timestamp, status)
 
     def create_final_message_once(self, user_id: str, execution_id: str, content: str) -> MessageRead | None:
         timestamp = utc_now()
@@ -186,6 +218,64 @@ class ExecutionRepository:
             )
         return MessageRead(id=message_id, conversation_id=conversation_id, role="assistant", content=content, created_at=timestamp)
 
+    def resume_interrupted(self, user_id: str, execution_id: str) -> ExecutionRead | None:
+        timestamp = utc_now()
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            execution = connection.execute(
+                "SELECT status FROM executions WHERE user_id = ? AND id = ?",
+                (user_id, execution_id),
+            ).fetchone()
+            if execution is None:
+                return None
+            if execution["status"] != "interrupted":
+                return self._read(connection, user_id, execution_id)
+
+            # Keep the interruption message as history and allow the resumed run to
+            # append its own final result when it reaches a terminal state.
+            connection.execute(
+                "DELETE FROM execution_final_messages WHERE execution_id = ? AND user_id = ?",
+                (execution_id, user_id),
+            )
+
+            tasks = connection.execute(
+                """SELECT id, dependencies_json, connector_ids_json FROM execution_tasks
+                   WHERE user_id = ? AND execution_id = ? AND status = 'interrupted'""",
+                (user_id, execution_id),
+            ).fetchall()
+            completed = {
+                row["id"] for row in connection.execute(
+                    "SELECT id FROM execution_tasks WHERE user_id = ? AND execution_id = ? AND status = 'completed'",
+                    (user_id, execution_id),
+                ).fetchall()
+            }
+            for task in tasks:
+                has_external_access = bool(json.loads(task["connector_ids_json"])) or connection.execute(
+                    "SELECT 1 FROM execution_tool_calls WHERE user_id = ? AND execution_id = ? AND task_id = ? LIMIT 1",
+                    (user_id, execution_id, task["id"]),
+                ).fetchone() is not None
+                dependencies = set(json.loads(task["dependencies_json"]))
+                if has_external_access:
+                    status = "blocked"
+                    detail = "Une action externe a pu avoir lieu avant l’arrêt. Vérifiez son état avant de la relancer."
+                    event_type = "task.resume_blocked"
+                else:
+                    status = "ready" if dependencies.issubset(completed) else "pending"
+                    detail = "Reprise sûre après interruption"
+                    event_type = "task.ready" if status == "ready" else "task.updated"
+                connection.execute(
+                    "UPDATE execution_tasks SET status = ?, error = ?, updated_at = ? WHERE user_id = ? AND execution_id = ? AND id = ?",
+                    (status, detail if status == "blocked" else None, timestamp, user_id, execution_id, task["id"]),
+                )
+                self._record_event(connection, user_id, execution_id, task["id"], event_type, detail, timestamp, status)
+
+            connection.execute(
+                "UPDATE executions SET status = 'running', updated_at = ? WHERE user_id = ? AND id = ?",
+                (timestamp, user_id, execution_id),
+            )
+            self._record_event(connection, user_id, execution_id, None, "execution.running", "Reprise après interruption", timestamp, "running")
+        return self.get(user_id, execution_id)
+
     def decide_approval(self, user_id: str, execution_id: str, approval_id: str, decision: str) -> str | None:
         if decision not in {"approve", "reject"}:
             raise ValueError("Invalid approval decision")
@@ -204,19 +294,39 @@ class ExecutionRepository:
             task_status = "ready" if decision == "approve" else "blocked"
             connection.execute("UPDATE execution_tasks SET status = ?, approval_required = CASE WHEN ? = 'approve' THEN 0 ELSE approval_required END, updated_at = ? WHERE execution_id = ? AND id = ? AND user_id = ?", (task_status, decision, timestamp, execution_id, row["task_id"], user_id))
             connection.execute("UPDATE executions SET status = ?, updated_at = ? WHERE id = ? AND user_id = ?", ("running" if decision == "approve" else "partial", timestamp, execution_id, user_id))
-            connection.execute(
-                "INSERT INTO execution_events (execution_id, user_id, task_id, event_type, message, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (execution_id, user_id, row["task_id"], "approval.decided", decision, timestamp),
-            )
+            task_status = "ready" if decision == "approve" else "blocked"
+            self._record_event(connection, user_id, execution_id, row["task_id"], "approval.decided", decision, timestamp, task_status)
         return decision
 
-    def list_events(self, user_id: str, execution_id: str, after_id: int | None = None) -> list[ExecutionEventRead]:
+    def list_events(self, user_id: str, execution_id: str, after_id: int | None = None, limit: int = 200) -> list[ExecutionEventRead]:
         with self.database.connection() as connection:
             rows = connection.execute(
-                "SELECT e.id, e.task_id, e.event_type, e.message, e.created_at FROM execution_events e JOIN executions x ON x.id = e.execution_id AND x.user_id = e.user_id WHERE e.user_id = ? AND e.execution_id = ? AND (? IS NULL OR e.id > ?) ORDER BY e.id",
-                (user_id, execution_id, after_id, after_id),
+                "SELECT e.id, e.task_id, e.agent_id, e.event_type, e.status, e.message, e.created_at FROM execution_events e JOIN executions x ON x.id = e.execution_id AND x.user_id = e.user_id WHERE e.user_id = ? AND e.execution_id = ? AND (? IS NULL OR e.id > ?) ORDER BY e.id LIMIT ?",
+                (user_id, execution_id, after_id, after_id, max(1, min(limit, 500))),
             ).fetchall()
         return [ExecutionEventRead(**dict(row)) for row in rows]
+
+    def list_artifacts(self, user_id: str, execution_id: str) -> list[ExecutionArtifactRead]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """SELECT a.id, a.task_id, a.name, a.media_type, a.created_at
+                   FROM execution_artifacts a JOIN executions e
+                     ON e.id = a.execution_id AND e.user_id = a.user_id
+                   WHERE a.user_id = ? AND a.execution_id = ? ORDER BY a.created_at, a.rowid""",
+                (user_id, execution_id),
+            ).fetchall()
+        return [ExecutionArtifactRead(**dict(row)) for row in rows]
+
+    def get_artifact(self, user_id: str, execution_id: str, artifact_id: str) -> ExecutionArtifactContent | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                """SELECT a.id, a.task_id, a.name, a.media_type, a.created_at, a.content
+                   FROM execution_artifacts a JOIN executions e
+                     ON e.id = a.execution_id AND e.user_id = a.user_id
+                   WHERE a.user_id = ? AND a.execution_id = ? AND a.id = ?""",
+                (user_id, execution_id, artifact_id),
+            ).fetchone()
+        return ExecutionArtifactContent(**dict(row)) if row else None
 
     def recover_interrupted(self) -> int:
         """Mark work abandoned by a process restart and persist visible recovery events."""
@@ -233,9 +343,15 @@ class ExecutionRepository:
                     "UPDATE executions SET status = 'interrupted', updated_at = ? WHERE id = ? AND user_id = ?",
                     (timestamp, execution["id"], execution["user_id"]),
                 )
-                connection.execute(
-                    "INSERT INTO execution_events (execution_id, user_id, event_type, message, created_at) VALUES (?, ?, 'execution.interrupted', ?, ?)",
-                    (execution["id"], execution["user_id"], "Le processus s’est arrêté; cette exécution doit être relancée explicitement.", timestamp),
+                self._record_event(
+                    connection,
+                    execution["user_id"],
+                    execution["id"],
+                    None,
+                    "execution.interrupted",
+                    "Le processus s’est arrêté; cette exécution doit être relancée explicitement.",
+                    timestamp,
+                    "interrupted",
                 )
         return len(active)
 

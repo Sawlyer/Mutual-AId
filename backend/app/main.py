@@ -18,6 +18,7 @@ from app.agents.service import AgentService, InvalidSkillAssignment
 from app.agents.models import AgentSkillCreate, AgentSkillUpdate
 from app.agents.skills import AgentSkillRead
 from app.executions.coordinator import ExecutionCoordinator
+from app.executions.models import ExecutionArtifactContent, ExecutionArtifactRead, ExecutionEventRead
 from app.executions.repository import ExecutionRepository
 from app.planning.router import RequestRouter
 from app.planning.schemas import PlanningRequest, PlanValidationError
@@ -312,10 +313,82 @@ async def list_executions(request: Request, user: CurrentUser):
 
 
 @router.get("/executions/{execution_id}/events", summary="Relire les événements d’une exécution")
-async def get_execution_events(execution_id: str, request: Request, user: CurrentUser, after_id: Annotated[int | None, Query(ge=0)] = None):
+async def get_execution_events(
+    execution_id: str,
+    request: Request,
+    user: CurrentUser,
+    after_id: Annotated[int | None, Query(ge=0)] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+):
     if request.app.state.execution_repository.get(user.id, execution_id) is None:
         raise HTTPException(status_code=404, detail="Exécution introuvable.")
-    return request.app.state.execution_repository.list_events(user.id, execution_id, after_id)
+    return request.app.state.execution_repository.list_events(user.id, execution_id, after_id, limit)
+
+
+@router.get("/executions/{execution_id}/stream", summary="Suivre une exécution en temps réel par SSE")
+async def stream_execution_events(
+    execution_id: str,
+    request: Request,
+    user: CurrentUser,
+    after_id: Annotated[int | None, Query(ge=0)] = None,
+) -> StreamingResponse:
+    repository: ExecutionRepository = request.app.state.execution_repository
+    execution = repository.get(user.id, execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Exécution introuvable.")
+
+    last_event_header = request.headers.get("last-event-id", "")
+    try:
+        reconnect_cursor = max(0, int(last_event_header))
+    except ValueError:
+        reconnect_cursor = 0
+    cursor = max(after_id or 0, reconnect_cursor)
+
+    async def generate():
+        last_heartbeat = time.monotonic()
+        last_seen = cursor
+        terminal_statuses = {"completed", "partial", "failed", "cancelled", "interrupted"}
+        while not await request.is_disconnected():
+            events: list[ExecutionEventRead] = repository.list_events(user.id, execution_id, last_seen)
+            for event in events:
+                last_seen = event.id
+                payload = json.dumps(event.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":"))
+                yield f"id: {event.id}\nevent: execution.event\ndata: {payload}\n\n"
+
+            current = repository.get(user.id, execution_id)
+            if current is None:
+                return
+            if current.status in terminal_statuses:
+                yield sse_event("execution.terminal", {"id": execution_id, "status": current.status})
+                return
+
+            now = time.monotonic()
+            if now - last_heartbeat >= 15:
+                yield ": keep-alive\n\n"
+                last_heartbeat = now
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+@router.get("/executions/{execution_id}/artifacts", response_model=list[ExecutionArtifactRead], summary="Lister les résultats d’une exécution")
+async def list_execution_artifacts(execution_id: str, request: Request, user: CurrentUser) -> list[ExecutionArtifactRead]:
+    repository: ExecutionRepository = request.app.state.execution_repository
+    if repository.get(user.id, execution_id) is None:
+        raise HTTPException(status_code=404, detail="Exécution introuvable.")
+    return repository.list_artifacts(user.id, execution_id)
+
+
+@router.get("/executions/{execution_id}/artifacts/{artifact_id}", response_model=ExecutionArtifactContent, summary="Consulter un résultat d’exécution")
+async def get_execution_artifact(execution_id: str, artifact_id: str, request: Request, user: CurrentUser) -> ExecutionArtifactContent:
+    artifact = request.app.state.execution_repository.get_artifact(user.id, execution_id, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Résultat introuvable.")
+    return artifact
 
 
 @router.post("/executions/{execution_id}/approvals/{approval_id}", summary="Approuver ou refuser une action")
@@ -329,6 +402,14 @@ async def decide_execution_approval(execution_id: str, approval_id: str, payload
 @router.post("/executions/{execution_id}/cancel", summary="Annuler une exécution")
 async def cancel_execution(execution_id: str, request: Request, user: CurrentUser):
     execution = await request.app.state.execution_coordinator.cancel(user.id, execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Exécution introuvable.")
+    return execution
+
+
+@router.post("/executions/{execution_id}/resume", summary="Reprendre une exécution interrompue")
+async def resume_execution(execution_id: str, request: Request, user: CurrentUser):
+    execution = await request.app.state.execution_coordinator.resume(user.id, execution_id)
     if execution is None:
         raise HTTPException(status_code=404, detail="Exécution introuvable.")
     return execution

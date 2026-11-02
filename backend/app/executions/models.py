@@ -19,6 +19,7 @@ class TaskRead(BaseModel):
     expected_output: str
     approval_required: bool
     status: TaskStatus
+    attempts: int = 0
     result: str | None = None
     error: str | None = None
 
@@ -40,8 +41,24 @@ class ExecutionRead(BaseModel):
 class ExecutionEventRead(BaseModel):
     id: int
     task_id: str | None
+    agent_id: str | None
     event_type: str
+    status: str
     message: str
     created_at: str
 
     model_config = ConfigDict(frozen=True)
+
+
+class ExecutionArtifactRead(BaseModel):
+    id: str
+    task_id: str
+    name: str
+    media_type: str
+    created_at: str
+
+    model_config = ConfigDict(frozen=True)
+
+
+class ExecutionArtifactContent(ExecutionArtifactRead):
+    content: str
