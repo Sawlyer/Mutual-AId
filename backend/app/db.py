@@ -558,6 +558,52 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
+    def user_has_active_executions(self, user_id: str) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM executions WHERE user_id = ? AND status IN "
+                "('planning', 'running', 'pausing', 'awaiting_approval') LIMIT 1",
+                (user_id,),
+            ).fetchone()
+        return row is not None
+
+    def delete_user_account(self, user_id: str) -> str:
+        """Delete all data owned by a user, unless an execution is still active."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is None:
+                return "not_found"
+
+            active_execution = connection.execute(
+                "SELECT 1 FROM executions WHERE user_id = ? AND status IN "
+                "('planning', 'running', 'pausing', 'awaiting_approval') LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            if active_execution:
+                return "active_executions"
+
+            execution_ids = "SELECT id FROM executions WHERE user_id = ?"
+            connection.execute(f"DELETE FROM execution_final_messages WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_attempts WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_approvals WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_tool_calls WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_artifacts WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_events WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_tasks WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute("DELETE FROM executions WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM conversation_connectors WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM conversations WHERE owner_id = ?", (user_id,))
+            connection.execute("DELETE FROM connector_oauth_states WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM connector_credentials WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM connector_connections WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM mcp_servers WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM agent_profile_skills WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM auto_agent_capabilities WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM agent_skills WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM agent_profiles WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        return "deleted"
+
     def get_user(self, user_id: str) -> AuthUserRead | None:
         with self.connection() as connection:
             row = connection.execute(

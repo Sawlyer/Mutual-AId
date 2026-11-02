@@ -32,6 +32,19 @@ describe('executionService', () => {
     }))
   })
 
+  it('pauses an execution with session credentials', async () => {
+    const response = { id: 'execution-1', status: 'pausing' }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await executionService.pause('execution-1')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/executions/execution-1/pause', expect.objectContaining({
+      method: 'POST',
+      credentials: 'include',
+    }))
+  })
+
   it('streams persisted execution events and closes on terminal state', () => {
     class MockEventSource extends EventTarget {
       static instance: MockEventSource

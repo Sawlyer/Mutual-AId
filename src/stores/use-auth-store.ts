@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { authService, type AuthUser } from '@/services/auth-service'
+import { useOpenAIChatStore } from '@/stores/use-openai-chat-store'
+import { useConversationsStore } from '@/stores/use-conversations-store'
 
 interface AuthState {
   user: AuthUser | null
@@ -10,6 +12,7 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>
   register: (name: string, email: string, password: string) => Promise<void>
   logout: () => Promise<void>
+  deleteAccount: (password: string) => Promise<void>
   clearError: () => void
 }
 
@@ -32,6 +35,18 @@ export const useAuthStore = create<AuthState>((set) => ({
   logout: async () => {
     await authService.logout()
     set({ user: null })
+  },
+  deleteAccount: async (password) => {
+    set({ busy: true, error: null })
+    try {
+      await authService.deleteAccount(password)
+      useOpenAIChatStore.getState().clearAccountData()
+      useConversationsStore.getState().clearConversations()
+      set({ user: null, busy: false })
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'La suppression du compte a échoué.', busy: false })
+      throw error
+    }
   },
   clearError: () => set({ error: null }),
 }))

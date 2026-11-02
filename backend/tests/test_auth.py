@@ -2,13 +2,14 @@ import sqlite3
 
 from fastapi.testclient import TestClient
 
+from app.auth import hash_password
 from app.config import Settings
 from app.db import Database
 from app.main import create_app
 
 
 def client_for(database_path):
-    settings = Settings(database_path=database_path, openai_api_key="", openai_model="")
+    settings = Settings(_env_file=None, database_path=database_path, openai_api_key="", openai_model="")
     return TestClient(create_app(settings))
 
 
@@ -48,6 +49,59 @@ def test_login_rejects_bad_password_and_logout_revokes_session(tmp_path):
         assert client.get("/api/auth/me").status_code == 200
         assert client.post("/api/auth/logout").status_code == 204
         assert client.get("/api/auth/me").status_code == 401
+
+
+def test_delete_account_requires_password_and_removes_owned_data(tmp_path):
+    with client_for(tmp_path / "auth.sqlite3") as client:
+        registered = client.post("/api/auth/register", json={
+            "name": "Ada", "email": "ada@example.com", "password": "correct horse battery staple",
+        })
+        user_id = registered.json()["id"]
+        database = client.app.state.database
+        conversation = database.create_conversation("Private", user_id)
+        database.create_message(conversation.id, "user", "private message")
+        database.store_connector_credentials(user_id, "github", "encrypted-token")
+        database.create_mcp_server("mcp-1", user_id, "Private MCP", "https://example.com/mcp", "encrypted-mcp-token")
+        other_user = database.create_user("grace@example.com", "Grace", hash_password("another password with twelve"))
+        other_conversation = database.create_conversation("Other account", other_user.id)
+        database.create_message(other_conversation.id, "user", "must remain private")
+
+        deleted = client.request("DELETE", "/api/auth/account", json={"password": "correct horse battery staple"})
+
+        assert deleted.status_code == 204
+        assert client.get("/api/auth/me").status_code == 401
+        assert database.get_conversation(other_conversation.id, other_user.id) is not None
+        with database.connection() as connection:
+            expected_counts = {"users": 1, "auth_sessions": 0, "conversations": 1, "messages": 1}
+            for table, expected_count in expected_counts.items():
+                assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == expected_count
+            for table in ("connector_credentials", "mcp_servers"):
+                assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
+def test_delete_account_rejects_wrong_password_and_active_execution(tmp_path):
+    from app.executions.repository import ExecutionRepository
+    from app.planning.schemas import ExecutionPlan, PlannedTask
+
+    with client_for(tmp_path / "auth.sqlite3") as client:
+        registered = client.post("/api/auth/register", json={
+            "name": "Ada", "email": "ada@example.com", "password": "correct horse battery staple",
+        })
+        user_id = registered.json()["id"]
+        database = client.app.state.database
+        conversation = database.create_conversation("Private", user_id)
+
+        wrong_password = client.request("DELETE", "/api/auth/account", json={"password": "incorrect password"})
+        assert wrong_password.status_code == 401
+        assert client.get("/api/auth/me").status_code == 200
+
+        ExecutionRepository(database).create(user_id, conversation.id, ExecutionPlan(
+            summary="Active", tasks=[PlannedTask(id="task", title="Still running")],
+        ))
+        active_execution = client.request("DELETE", "/api/auth/account", json={"password": "correct horse battery staple"})
+
+        assert active_execution.status_code == 409
+        assert client.get("/api/auth/me").status_code == 200
 
 
 def test_protected_routes_require_a_valid_session(tmp_path):

@@ -151,6 +151,47 @@ def test_scheduler_runs_parallel_tasks_and_waits_for_dependencies(tmp_path):
     assert repo.get("owner-id", execution.id).status == "completed"
 
 
+def test_scheduler_pauses_at_task_boundary_without_starting_dependents(tmp_path):
+    from app.executions.scheduler import DagScheduler
+
+    db = Database(tmp_path / "execution-pause-boundary.sqlite3")
+    db.initialize()
+    conversation = db.create_conversation("Test", "owner-id")
+    repo = ExecutionRepository(db)
+    plan = ExecutionPlan(summary="Pause", tasks=[
+        PlannedTask(id="first", title="Première tâche", expected_output="Terminé"),
+        PlannedTask(id="next", title="Tâche suivante", dependencies=["first"], expected_output="Terminé"),
+    ])
+    execution = repo.create("owner-id", conversation.id, plan)
+    task_started = asyncio.Event()
+    finish_task = asyncio.Event()
+    pause_requested = asyncio.Event()
+
+    async def handler(task):
+        if task.id == "first":
+            task_started.set()
+            await finish_task.wait()
+        return "Terminé"
+
+    async def run_scheduler():
+        scheduler = DagScheduler(repo, handler, "owner-id", execution.id, pause_event=pause_requested)
+        await scheduler.run()
+
+    async def exercise_pause():
+        scheduled = asyncio.create_task(run_scheduler())
+        await asyncio.wait_for(task_started.wait(), timeout=1)
+        pause_requested.set()
+        finish_task.set()
+        await scheduled
+
+    asyncio.run(exercise_pause())
+
+    paused = repo.get("owner-id", execution.id)
+    assert paused is not None
+    assert paused.status == "paused"
+    assert [task.status for task in paused.tasks] == ["completed", "ready"]
+
+
 def test_partial_failure_preserves_completed_result(tmp_path):
     from app.executions.scheduler import DagScheduler
     db = Database(tmp_path / "execution.sqlite3")
@@ -382,6 +423,22 @@ def test_final_execution_message_is_persisted_once(tmp_path):
     messages = db.list_messages(conversation.id)
     assert len(messages) == 1
     assert messages[0].content == "Résultat final"
+
+
+def test_paused_execution_does_not_persist_a_final_message(tmp_path):
+    from app.executions.coordinator import ExecutionCoordinator
+
+    db = Database(tmp_path / "paused-execution.sqlite3")
+    db.initialize()
+    conversation = db.create_conversation("Test", "owner-id")
+    repo = ExecutionRepository(db)
+    execution = repo.create("owner-id", conversation.id, sample_plan())
+    repo.set_execution_status("owner-id", execution.id, "paused", "En pause")
+    coordinator = ExecutionCoordinator(repo, None, None, None, None, None)
+
+    coordinator._persist_final_answer("owner-id", execution.id)
+
+    assert db.list_messages(conversation.id) == []
 
 
 def test_agent_task_executor_resolves_current_enabled_profile_skills(tmp_path, monkeypatch):
