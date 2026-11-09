@@ -28,8 +28,43 @@ export interface AgentSkill {
   description: string
   instructions: string
   enabled: boolean
+  source: 'user' | 'marketplace' | 'generated'
+  catalog_id: string | null
+  catalog_version: number | null
+  review_status: 'pending' | 'approved' | 'rejected'
+  generated_by: string | null
+  assigned_profile_ids: string[]
   created_at: string
   updated_at: string
+}
+
+export interface SkillCatalogItem {
+  id: string
+  name: string
+  description: string
+  instructions: string
+  category: string
+  tags: string[]
+  version: number
+  author: string
+  source: string
+  updated_at: string
+  installed: boolean
+}
+
+export interface SkillCatalogComparison {
+  local: AgentSkill
+  catalog: SkillCatalogItem
+  customized: boolean
+  update_available: boolean
+  available_versions: number[]
+}
+
+export interface SkillUpgradeResult {
+  status: 'updated' | 'conflict' | 'current'
+  skill: AgentSkill
+  customized: boolean
+  message: string
 }
 
 export interface AgentCatalog {

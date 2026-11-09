@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-ExecutionStatus = Literal["planning", "running", "awaiting_approval", "completed", "partial", "failed", "cancelled", "interrupted"]
+ExecutionStatus = Literal["planning", "running", "pausing", "paused", "awaiting_approval", "completed", "partial", "failed", "cancelled", "interrupted"]
 TaskStatus = Literal["pending", "ready", "running", "awaiting_approval", "validating", "completed", "failed", "blocked", "paused", "interrupted", "cancelled"]
 
 

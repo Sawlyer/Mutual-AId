@@ -14,9 +14,9 @@ from app.auth import create_session, hash_password, token_digest, verify_passwor
 
 from app.agent import configure_openai, stream_assistant
 from app.agents.models import AgentProfileCreate, AgentProfileRead, AgentProfileUpdate
-from app.agents.service import AgentService, InvalidSkillAssignment
+from app.agents.service import AgentService, InvalidSkillAssignment, UnsafeGeneratedSkill
 from app.agents.models import AgentSkillCreate, AgentSkillUpdate
-from app.agents.skills import AgentSkillRead
+from app.agents.skills import AgentSkillRead, GeneratedSkillReview, SkillCatalogComparison, SkillCatalogInstall, SkillCatalogItem, SkillUpgradeRequest, SkillUpgradeResult
 from app.executions.coordinator import ExecutionCoordinator
 from app.executions.models import ExecutionArtifactContent, ExecutionArtifactRead, ExecutionEventRead
 from app.executions.repository import ExecutionRepository
@@ -44,6 +44,7 @@ from app.schemas import (
     ConversationRead,
     ConversationRename,
     AuthLogin,
+    AuthAccountDelete,
     AuthRegister,
     AuthUserRead,
     AgentCatalogRead,
@@ -171,6 +172,52 @@ async def logout(request: Request, response: Response, database: Db, settings: A
     return response
 
 
+@router.delete("/auth/account", status_code=204, dependencies=[Depends(rate_limit), TrustedOrigin],
+               summary="Supprimer le compte et ses données")
+async def delete_account(
+    payload: AuthAccountDelete,
+    request: Request,
+    response: Response,
+    database: Db,
+    settings: AppSettings,
+    user: CurrentUser,
+) -> Response:
+    account = database.get_user_by_email(user.email)
+    if account is None or not verify_password(payload.password, account["password_hash"]):
+        raise HTTPException(status_code=401, detail="Mot de passe incorrect.")
+
+    # Revoke provider grants before deleting their encrypted credentials. The database
+    # performs the active-execution check again atomically before removing the account.
+    if database.user_has_active_executions(user.id):
+        raise HTTPException(status_code=409, detail="Terminez ou mettez en pause les exécutions avant de supprimer le compte.")
+
+    github_oauth: GitHubAppOAuthClient | None = request.app.state.github_oauth
+    if github_oauth and database.get_connector_credentials(user.id, "github"):
+        try:
+            await github_oauth.revoke(user.id)
+        except Exception as error:
+            logger.warning("GitHub grant revocation failed during account deletion for user %s (%s)", user.id, type(error).__name__)
+
+    google_oauth: GoogleOAuthClient | None = request.app.state.google_oauth
+    if google_oauth:
+        for connector_id in GOOGLE_CONNECTOR_SCOPES:
+            if database.get_connector_credentials(user.id, connector_id):
+                try:
+                    await google_oauth.revoke(user.id, connector_id)
+                except Exception as error:
+                    logger.warning("Google grant revocation failed during account deletion for user %s (%s)", user.id, type(error).__name__)
+
+    result = database.delete_user_account(user.id)
+    if result == "active_executions":
+        raise HTTPException(status_code=409, detail="Une exécution a démarré. Réessayez après sa fin.")
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="Compte introuvable.")
+
+    response.delete_cookie(settings.auth_cookie_name, path="/api", httponly=True, secure=settings.auth_cookie_secure, samesite="lax")
+    response.status_code = 204
+    return response
+
+
 @router.get("/health", response_model=HealthRead, summary="Vérifier la disponibilité du backend")
 async def health(settings: AppSettings) -> HealthRead:
     return HealthRead(
@@ -235,6 +282,78 @@ async def list_agent_skills(service: Annotated[AgentService, Depends(agent_servi
     return service.list_skills(user.id)
 
 
+@router.get("/skill-marketplace", response_model=list[SkillCatalogItem], summary="Rechercher dans le catalogue local de compétences")
+async def search_skill_marketplace(
+    service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser,
+    query: str = Query(default="", max_length=100), category: str | None = Query(default=None, max_length=40),
+) -> list[SkillCatalogItem]:
+    return service.search_skill_catalog(user.id, query, category)
+
+
+@router.post("/skill-marketplace/{catalog_id}/install", response_model=AgentSkillRead, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(rate_limit), TrustedOrigin], summary="Installer une compétence du catalogue local")
+async def install_marketplace_skill(
+    catalog_id: str, payload: SkillCatalogInstall, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser,
+) -> AgentSkillRead:
+    try:
+        return service.install_catalog_skill(user.id, catalog_id, payload.profile_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Compétence du catalogue ou agent introuvable.") from error
+    except InvalidSkillAssignment as error:
+        raise HTTPException(status_code=422, detail="Cette compétence ne peut pas être affectée à cet agent.") from error
+
+
+@router.post("/agent-skills/generated", response_model=AgentSkillRead, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(rate_limit), TrustedOrigin], summary="Soumettre une compétence générée à la revue")
+async def create_generated_agent_skill(
+    payload: AgentSkillCreate, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser,
+) -> AgentSkillRead:
+    try:
+        return service.create_generated_skill(user.id, payload)
+    except UnsafeGeneratedSkill as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.get("/agent-skills/audit", summary="Consulter l’audit de la bibliothèque de compétences")
+async def list_agent_skill_audit(service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> list[dict[str, object]]:
+    return service.skill_audit(user.id)
+
+
+@router.get("/agent-skills/{skill_id}/comparison", response_model=SkillCatalogComparison, summary="Comparer une copie installée au catalogue")
+async def compare_agent_skill(skill_id: str, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser, version: int | None = Query(default=None, ge=1)) -> SkillCatalogComparison:
+    comparison = service.compare_catalog_skill(user.id, skill_id, version)
+    if comparison is None:
+        raise HTTPException(status_code=404, detail="Cette compétence n’est pas issue du catalogue.")
+    return comparison
+
+
+@router.post("/agent-skills/{skill_id}/upgrade", response_model=SkillUpgradeResult,
+             dependencies=[Depends(rate_limit), TrustedOrigin], summary="Mettre à jour une copie installée avec contrôle des personnalisations")
+async def upgrade_agent_skill(
+    skill_id: str, payload: SkillUpgradeRequest, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser,
+) -> SkillUpgradeResult:
+    try:
+        return service.upgrade_catalog_skill(user.id, skill_id, payload.strategy, payload.target_version)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Compétence installée introuvable.") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Stratégie de mise à jour invalide.") from error
+
+
+@router.post("/agent-skills/{skill_id}/review", response_model=AgentSkillRead,
+             dependencies=[Depends(rate_limit), TrustedOrigin], summary="Approuver ou rejeter une compétence générée")
+async def review_generated_agent_skill(
+    skill_id: str, payload: GeneratedSkillReview, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser,
+) -> AgentSkillRead:
+    try:
+        skill = service.review_generated_skill(user.id, skill_id, payload.decision)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Décision de revue invalide.") from error
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Compétence générée introuvable.")
+    return skill
+
+
 @router.post("/agent-skills", response_model=AgentSkillRead, status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(rate_limit), TrustedOrigin], summary="Créer une compétence textuelle")
 async def create_agent_skill(payload: AgentSkillCreate, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> AgentSkillRead:
@@ -252,7 +371,10 @@ async def get_agent_skill(skill_id: str, service: Annotated[AgentService, Depend
 @router.patch("/agent-skills/{skill_id}", response_model=AgentSkillRead,
               dependencies=[Depends(rate_limit), TrustedOrigin], summary="Modifier une compétence")
 async def update_agent_skill(skill_id: str, payload: AgentSkillUpdate, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> AgentSkillRead:
-    skill = service.update_skill(user.id, None, skill_id, payload)
+    try:
+        skill = service.update_skill(user.id, None, skill_id, payload)
+    except UnsafeGeneratedSkill as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if skill is None:
         raise HTTPException(status_code=404, detail="Compétence introuvable.")
     return skill
@@ -402,6 +524,14 @@ async def decide_execution_approval(execution_id: str, approval_id: str, payload
 @router.post("/executions/{execution_id}/cancel", summary="Annuler une exécution")
 async def cancel_execution(execution_id: str, request: Request, user: CurrentUser):
     execution = await request.app.state.execution_coordinator.cancel(user.id, execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Exécution introuvable.")
+    return execution
+
+
+@router.post("/executions/{execution_id}/pause", summary="Mettre en pause une exécution")
+async def pause_execution(execution_id: str, request: Request, user: CurrentUser):
+    execution = await request.app.state.execution_coordinator.pause(user.id, execution_id)
     if execution is None:
         raise HTTPException(status_code=404, detail="Exécution introuvable.")
     return execution

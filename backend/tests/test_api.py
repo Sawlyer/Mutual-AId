@@ -236,6 +236,31 @@ def test_resume_interrupted_execution_is_owner_scoped(tmp_path):
         assert owner.post(f"/api/executions/{execution.id}/resume").status_code == 404
 
 
+def test_pause_execution_is_owner_scoped_and_idempotent(tmp_path):
+    from app.executions.repository import ExecutionRepository
+    from app.planning.schemas import ExecutionPlan, PlannedTask
+
+    with make_client(tmp_path) as owner:
+        conversation = owner.post("/api/conversations", json={}).json()
+        owner_id = owner.get("/api/auth/me").json()["id"]
+        repository = ExecutionRepository(owner.app.state.database)
+        execution = repository.create(owner_id, conversation["id"], ExecutionPlan(
+            summary="Pause", tasks=[PlannedTask(id="task", title="Tâche")],
+        ))
+
+        paused = owner.post(f"/api/executions/{execution.id}/pause")
+        repeated = owner.post(f"/api/executions/{execution.id}/pause")
+
+        assert paused.status_code == repeated.status_code == 200
+        assert paused.json()["status"] == repeated.json()["status"] == "paused"
+
+        owner.post("/api/auth/logout")
+        owner.post("/api/auth/register", json={
+            "name": "Other user", "email": "other@example.com", "password": "a sufficiently long other password",
+        })
+        assert owner.post(f"/api/executions/{execution.id}/pause").status_code == 404
+
+
 def test_execution_stream_replays_events_and_artifacts_are_downloadable(tmp_path):
     from app.executions.repository import ExecutionRepository
     from app.planning.schemas import ExecutionPlan, PlannedTask

@@ -12,6 +12,8 @@ const terminal = new Set<Execution['status']>(['completed', 'partial', 'failed',
 const statusLabel: Record<Execution['status'], string> = {
   planning: 'Planification',
   running: 'En cours',
+  pausing: 'Mise en pause',
+  paused: 'En pause',
   awaiting_approval: 'Approbation requise',
   completed: 'Terminée',
   partial: 'Partiellement terminée',

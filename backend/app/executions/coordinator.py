@@ -104,6 +104,7 @@ class ExecutionCoordinator:
         self.mcp_runtime = mcp_runtime
         self._background: dict[str, asyncio.Task[None]] = {}
         self._cancel: dict[str, asyncio.Event] = {}
+        self._pause: dict[str, asyncio.Event] = {}
         self._user_semaphores: dict[str, asyncio.Semaphore] = {}
 
     async def start(self, user_id: str, conversation_id: str, plan: ExecutionPlan) -> ExecutionRead:
@@ -120,11 +121,19 @@ class ExecutionCoordinator:
             raise PermissionError("An assigned agent profile is unavailable")
         execution = self.repository.create(user_id, conversation_id, plan, snapshots)
         cancel_event = asyncio.Event()
+        pause_event = asyncio.Event()
         self._cancel[execution.id] = cancel_event
-        self._background[execution.id] = asyncio.create_task(self.run(user_id, execution.id, cancel_event))
+        self._pause[execution.id] = pause_event
+        self._background[execution.id] = asyncio.create_task(self.run(user_id, execution.id, cancel_event, pause_event))
         return execution
 
-    async def run(self, user_id: str, execution_id: str, cancel_event: asyncio.Event | None = None) -> None:
+    async def run(
+        self,
+        user_id: str,
+        execution_id: str,
+        cancel_event: asyncio.Event | None = None,
+        pause_event: asyncio.Event | None = None,
+    ) -> None:
         from app.executions.scheduler import DagScheduler
 
         execution = self.repository.get(user_id, execution_id)
@@ -140,7 +149,8 @@ class ExecutionCoordinator:
                 return await handler(task)
 
         scheduler = DagScheduler(self.repository, execute_with_user_limit, user_id, execution_id,
-                                 max_concurrency=self.settings.max_parallel_tasks, cancel_event=cancel_event)
+                                 max_concurrency=self.settings.max_parallel_tasks, cancel_event=cancel_event,
+                                 pause_event=pause_event)
         try:
             await scheduler.run()
         except asyncio.CancelledError:
@@ -152,9 +162,27 @@ class ExecutionCoordinator:
             self.repository.set_execution_status(user_id, execution_id, "failed", "L’exécution n’a pas pu être terminée.")
         self._persist_final_answer(user_id, execution_id)
 
+    async def pause(self, user_id: str, execution_id: str) -> ExecutionRead | None:
+        execution = self.repository.get(user_id, execution_id)
+        if execution is None:
+            return None
+        if execution.status in {"completed", "partial", "failed", "cancelled", "interrupted", "paused", "pausing"}:
+            return execution
+        if execution.status not in {"running", "awaiting_approval"}:
+            return execution
+
+        background = self._background.get(execution_id)
+        pause_event = self._pause.get(execution_id)
+        if background is not None and not background.done() and pause_event is not None:
+            self.repository.set_execution_status(user_id, execution_id, "pausing", "Pause demandée; les tâches en cours vont se terminer")
+            pause_event.set()
+        else:
+            self.repository.set_execution_status(user_id, execution_id, "paused", "Exécution mise en pause")
+        return self.repository.get(user_id, execution_id)
+
     def _persist_final_answer(self, user_id: str, execution_id: str) -> None:
         execution = self.repository.get(user_id, execution_id)
-        if execution is None or execution.status in {"running", "planning", "awaiting_approval"}:
+        if execution is None or execution.status not in {"completed", "partial", "failed", "cancelled", "interrupted"}:
             return
         heading = {
             "completed": "Exécution terminée",
@@ -194,21 +222,32 @@ class ExecutionCoordinator:
 
     async def resume(self, user_id: str, execution_id: str) -> ExecutionRead | None:
         execution = self.repository.get(user_id, execution_id)
-        if execution is None or execution.status != "interrupted":
+        if execution is None or execution.status not in {"interrupted", "paused"}:
             return execution
         background = self._background.get(execution_id)
         if background is not None and not background.done():
             await asyncio.gather(background, return_exceptions=True)
             execution = self.repository.get(user_id, execution_id)
-            if execution is None or execution.status != "interrupted":
+            if execution is None or execution.status not in {"interrupted", "paused"}:
                 return execution
 
-        resumed = self.repository.resume_interrupted(user_id, execution_id)
+        resumed = (
+            self.repository.resume_interrupted(user_id, execution_id)
+            if execution.status == "interrupted"
+            else self.repository.get(user_id, execution_id)
+        )
         if resumed is None:
             return None
+        if execution.status == "paused":
+            self.repository.set_execution_status(user_id, execution_id, "running", "Reprise de l’exécution")
+            resumed = self.repository.get(user_id, execution_id)
+            if resumed is None:
+                return None
         cancel_event = asyncio.Event()
+        pause_event = asyncio.Event()
         self._cancel[execution_id] = cancel_event
-        self._background[execution_id] = asyncio.create_task(self.run(user_id, execution_id, cancel_event))
+        self._pause[execution_id] = pause_event
+        self._background[execution_id] = asyncio.create_task(self.run(user_id, execution_id, cancel_event, pause_event))
         return resumed
 
     async def decide_approval(self, user_id: str, execution_id: str, approval_id: str, decision: str) -> ExecutionRead | None:
