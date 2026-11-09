@@ -228,7 +228,7 @@ class ExecutionCoordinator:
         if background is not None and not background.done():
             await asyncio.gather(background, return_exceptions=True)
             execution = self.repository.get(user_id, execution_id)
-            if execution is None or execution.status != "interrupted":
+            if execution is None or execution.status not in {"interrupted", "paused"}:
                 return execution
 
         resumed = (

@@ -52,6 +52,41 @@ def test_resume_requeues_safe_work_without_replaying_completed_or_external_tasks
     assert repo.list_events("owner-id", execution.id)[-1].event_type == "execution.running"
 
 
+def test_resume_restarts_when_background_finishes_during_pause_wait(tmp_path):
+    from app.executions.coordinator import ExecutionCoordinator
+
+    async def scenario():
+        db = Database(tmp_path / "resume-pause-race.sqlite3")
+        db.initialize()
+        conversation = db.create_conversation("Test", "owner-id")
+        repo = ExecutionRepository(db)
+        execution = repo.create("owner-id", conversation.id, sample_plan())
+        repo.set_execution_status("owner-id", execution.id, "paused", "Exécution mise en pause")
+        coordinator = ExecutionCoordinator(repo, None, None, None, None, None)
+        finish_background = asyncio.Event()
+        restarted = asyncio.Event()
+
+        async def finishing_background():
+            await finish_background.wait()
+
+        async def run_again(user_id, execution_id, cancel_event=None, pause_event=None):
+            restarted.set()
+
+        coordinator.run = run_again
+        background = asyncio.create_task(finishing_background())
+        coordinator._background[execution.id] = background
+        resume_request = asyncio.create_task(coordinator.resume("owner-id", execution.id))
+        await asyncio.sleep(0)
+        finish_background.set()
+
+        resumed = await resume_request
+        assert resumed is not None and resumed.status == "running"
+        assert coordinator._background[execution.id] is not background
+        await asyncio.wait_for(restarted.wait(), timeout=1)
+
+    asyncio.run(scenario())
+
+
 def test_final_execution_message_is_updated_when_a_run_resumes(tmp_path):
     db = Database(tmp_path / "final-message.sqlite3")
     db.initialize()
