@@ -33,6 +33,39 @@ Pour obtenir de vraies réponses IA, créez `backend/.env` à partir de `backend
 
 Les comptes, conversations et sessions SQLite sont conservés dans un volume Docker nommé. **Ctrl+C** arrête le lancement au premier plan sans supprimer les données. `docker compose down` arrête et retire les conteneurs, tout en conservant les données. Pour effacer aussi les données locales, utilisez `docker compose down -v`.
 
+## Maintenance de SQLite
+
+Depuis le dossier `backend/`, `uv run python -m app.db_maintenance` fournit des commandes opérateur. Les sauvegardes utilisent l’API SQLite en ligne, incluent les écritures validées du journal WAL, sont vérifiées avec `integrity_check` et ne remplacent jamais un fichier existant. Choisissez une destination durable située hors du dépôt et du volume de données de l’application : une copie conservée dans le même volume ne protège pas d’une perte de ce volume.
+
+```bash
+# Créer un snapshot pendant que l’application tourne.
+uv run python -m app.db_maintenance backup --destination /chemin-securise/mutual-aid.sqlite3
+
+# Restaurer vers un nouveau fichier, sans écraser la base active.
+uv run python -m app.db_maintenance restore --source /chemin-securise/mutual-aid.sqlite3 --destination ./data/mutual-aid-restored.sqlite3
+```
+
+Après restauration, arrêtez l’application, vérifiez que le nouveau fichier est bien celui choisi, puis définissez `DATABASE_PATH` vers ce fichier avant de redémarrer. L’application applique ses migrations au démarrage. Pour Docker Compose, `DATABASE_PATH` peut être défini dans le fichier `.env` utilisé par Compose ; sa valeur par défaut reste `/app/backend/data/mutual_aid.sqlite3`. Testez régulièrement une restauration sur une copie distincte avant de dépendre d’une sauvegarde.
+
+La purge des artefacts est manuelle et limitée aux exécutions terminales. Sans `--apply`, la commande affiche uniquement le nombre d’artefacts plus anciens que la durée indiquée ; contrôlez ce nombre avant toute suppression :
+
+```bash
+uv run python -m app.db_maintenance prune-artifacts --retention-days 90
+uv run python -m app.db_maintenance prune-artifacts --retention-days 90 --apply
+```
+
+Pour un déploiement HTTPS, configurez `AUTH_COOKIE_SECURE=true`, le proxy TLS et `ALLOWED_ORIGINS` avec les origines frontend exactes. Gardez les clés et sauvegardes hors du dépôt et limitez l’accès aux sauvegardes comme à la base active.
+
+### Comptes, secrets et mises à jour
+
+Un utilisateur peut supprimer son compte depuis **Paramètres** après avoir confirmé son mot de passe. Les conversations, exécutions, artefacts, profils, skills, configurations MCP, sessions et identifiants OAuth locaux sont supprimés ensemble. Une suppression est refusée tant qu’une exécution est active. La révocation des jetons Google/GitHub est tentée avant leur suppression locale ; si le fournisseur est indisponible, supprimez aussi l’autorisation depuis les paramètres de sécurité du fournisseur.
+
+Pour renouveler `OPENAI_API_KEY`, créez la nouvelle clé dans OpenAI, remplacez la valeur dans le gestionnaire de secrets ou `backend/.env`, puis redémarrez le backend. Révoquez l’ancienne clé après vérification du service. `CONNECTOR_TOKEN_ENCRYPTION_KEY` utilise actuellement une clé unique sans migration entre clés : ne la remplacez pas tant que des jetons OAuth ou MCP doivent être conservés. Déconnectez les connecteurs Google/GitHub et supprimez puis recréez les serveurs MCP avec leurs nouveaux secrets avant de changer cette clé.
+
+Avant chaque mise à jour, créez une sauvegarde vérifiée. Les migrations SQLite sont appliquées au démarrage et ne proposent pas de downgrade automatique : pour revenir à une ancienne version, arrêtez l’application, restaurez une copie de la sauvegarde vers un nouveau fichier, pointez `DATABASE_PATH` sur cette copie et redémarrez avec l’ancienne image. Vérifiez les données restaurées avant de supprimer les fichiers précédents.
+
+SQLite convient à une instance applicative avec un volume persistant et une seule base partagée. Il sérialise les écritures et ne doit pas être monté comme stockage multi-écrivain entre plusieurs hôtes. Si les attentes de verrouillage deviennent régulières ou si plusieurs workers doivent écrire en parallèle, migrez vers un serveur de base de données avant d’augmenter le nombre d’instances.
+
 Compose v2.24 ou plus récent est nécessaire pour que le fichier local `backend/.env` soit facultatif. Il est inclus dans Docker Desktop à jour ; sur Linux, installez le plugin Docker Compose correspondant à votre distribution.
 
 ## Démarrage natif (sans Docker)

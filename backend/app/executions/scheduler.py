@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class DagScheduler:
     def __init__(self, repository: ExecutionRepository, handler: TaskHandler, user_id: str, execution_id: str,
                  max_concurrency: int = 3, cancel_event: asyncio.Event | None = None, max_attempts: int = 2,
-                 task_timeout_seconds: float = 300):
+                 task_timeout_seconds: float = 300, pause_event: asyncio.Event | None = None):
         self.repository = repository
         self.handler = handler
         self.user_id = user_id
@@ -21,6 +21,7 @@ class DagScheduler:
         self.cancel_event = cancel_event
         self.max_attempts = max(1, min(max_attempts, 3))
         self.task_timeout_seconds = max(0.01, min(task_timeout_seconds, 900))
+        self.pause_event = pause_event
 
     async def _run_task(self, task: TaskRead, semaphore: asyncio.Semaphore) -> bool:
         async with semaphore:
@@ -79,6 +80,13 @@ class DagScheduler:
         while True:
             if self.cancel_event and self.cancel_event.is_set():
                 return
+            if self.pause_event and self.pause_event.is_set():
+                execution = self.repository.get(self.user_id, self.execution_id)
+                terminal_tasks = {"completed", "failed", "blocked", "cancelled", "interrupted"}
+                if execution and execution.status not in {"completed", "partial", "failed", "cancelled", "interrupted"}:
+                    if any(task.status not in terminal_tasks for task in execution.tasks):
+                        self.repository.set_execution_status(self.user_id, self.execution_id, "paused", "Exécution mise en pause entre deux tâches")
+                        return
             execution = self.repository.get(self.user_id, self.execution_id)
             if execution is None or execution.status in {"completed", "partial", "failed", "cancelled", "interrupted"}:
                 return

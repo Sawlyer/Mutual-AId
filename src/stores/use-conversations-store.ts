@@ -8,6 +8,7 @@ interface ConversationsState {
   createConversation: () => string
   renameConversation: (id: string, title: string) => void
   deleteConversation: (id: string) => void
+  clearConversations: () => void
   setConnectorIds: (id: string, connectorIds: string[]) => void
   sendMessage: (conversationId: string, content: string) => Promise<void>
 }
@@ -38,6 +39,7 @@ export const useConversationsStore = create<ConversationsState>()(persist((set, 
   },
   renameConversation: (id, title) => set((state) => ({ conversations: state.conversations.map((item) => item.id === id ? { ...item, title: title.trim() || item.title, updatedAt: new Date().toISOString() } : item) })),
   deleteConversation: (id) => set((state) => ({ conversations: state.conversations.filter((item) => item.id !== id), messages: state.messages.filter((item) => item.conversationId !== id) })),
+  clearConversations: () => set({ conversations: [], messages: [] }),
   setConnectorIds: (id, connectorIds) => set((state) => ({ conversations: state.conversations.map((item) => item.id === id ? { ...item, connectorIds: [...connectorIds] } : item) })),
   sendMessage: async (conversationId, rawContent) => {
     const content = rawContent.trim()

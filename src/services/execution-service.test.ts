@@ -32,6 +32,19 @@ describe('executionService', () => {
     }))
   })
 
+  it('pauses an execution with session credentials', async () => {
+    const response = { id: 'execution-1', status: 'pausing' }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await executionService.pause('execution-1')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/executions/execution-1/pause', expect.objectContaining({
+      method: 'POST',
+      credentials: 'include',
+    }))
+  })
+
   it('streams persisted execution events and closes on terminal state', () => {
     class MockEventSource extends EventTarget {
       static instance: MockEventSource
@@ -55,6 +68,9 @@ describe('executionService', () => {
 
     const unsubscribe = executionService.subscribe('execution-1', handlers)
     const source = MockEventSource.instance
+    source.dispatchEvent(new MessageEvent('execution.unknown', { data: JSON.stringify({ future_payload: true }) }))
+    expect(handlers.onEvent).not.toHaveBeenCalled()
+    expect(source.closed).toBe(false)
     source.dispatchEvent(new MessageEvent('execution.event', {
       data: JSON.stringify({ id: 7, task_id: 'task-1', agent_id: 'agent-alpha', event_type: 'task.started', status: 'running', message: 'Démarrée', created_at: 'now' }),
     }))

@@ -1,4 +1,4 @@
-export type ExecutionStatus = 'planning' | 'running' | 'awaiting_approval' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'interrupted'
+export type ExecutionStatus = 'planning' | 'running' | 'pausing' | 'paused' | 'awaiting_approval' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'interrupted'
 export type ExecutionTaskStatus = 'pending' | 'ready' | 'running' | 'awaiting_approval' | 'validating' | 'completed' | 'failed' | 'blocked' | 'paused' | 'interrupted' | 'cancelled'
 
 export interface ExecutionTask {

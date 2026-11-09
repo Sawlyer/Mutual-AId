@@ -315,6 +315,26 @@ class Database:
                 connection.execute("ALTER TABLE agent_skills ADD COLUMN catalog_id TEXT")
             if "source" not in agent_skill_columns:
                 connection.execute("ALTER TABLE agent_skills ADD COLUMN source TEXT NOT NULL DEFAULT 'user'")
+            if "catalog_version" not in agent_skill_columns:
+                connection.execute("ALTER TABLE agent_skills ADD COLUMN catalog_version INTEGER")
+            if "catalog_snapshot_json" not in agent_skill_columns:
+                connection.execute("ALTER TABLE agent_skills ADD COLUMN catalog_snapshot_json TEXT")
+            if "review_status" not in agent_skill_columns:
+                connection.execute("ALTER TABLE agent_skills ADD COLUMN review_status TEXT NOT NULL DEFAULT 'approved'")
+            if "generated_by" not in agent_skill_columns:
+                connection.execute("ALTER TABLE agent_skills ADD COLUMN generated_by TEXT")
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS agent_skill_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    skill_id TEXT NOT NULL,
+                    profile_id TEXT,
+                    action TEXT NOT NULL,
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                )"""
+            )
+            connection.execute("CREATE INDEX IF NOT EXISTS agent_skill_audit_user_created ON agent_skill_audit(user_id, created_at DESC)")
             connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS agent_skills_catalog_owner "
                 "ON agent_skills(user_id, catalog_id) WHERE catalog_id IS NOT NULL"
@@ -412,14 +432,22 @@ class Database:
             return None
         skill = dict(row)
         skill["enabled"] = bool(skill["enabled"])
+        snapshot_json = skill.pop("catalog_snapshot_json", None)
+        skill["catalog_snapshot"] = json.loads(snapshot_json) if snapshot_json else None
         return skill
 
     def create_agent_skill(self, user_id: str, skill_id: str, skill_data: dict[str, object]) -> dict[str, object]:
         timestamp = utc_now()
         with self.connection() as connection:
             connection.execute(
-                "INSERT INTO agent_skills (id, user_id, name, description, instructions, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (skill_id, user_id, skill_data["name"], skill_data.get("description", ""), skill_data["instructions"], int(bool(skill_data.get("enabled", True))), timestamp, timestamp),
+                """INSERT INTO agent_skills
+                   (id, user_id, name, description, instructions, enabled, source, catalog_id, catalog_version,
+                    catalog_snapshot_json, review_status, generated_by, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (skill_id, user_id, skill_data["name"], skill_data.get("description", ""), skill_data["instructions"],
+                 int(bool(skill_data.get("enabled", True))), skill_data.get("source", "user"), skill_data.get("catalog_id"),
+                 skill_data.get("catalog_version"), json.dumps(skill_data["catalog_snapshot"]) if skill_data.get("catalog_snapshot") else None,
+                 skill_data.get("review_status", "approved"), skill_data.get("generated_by"), timestamp, timestamp),
             )
             row = connection.execute("SELECT * FROM agent_skills WHERE user_id = ? AND id = ?", (user_id, skill_id)).fetchone()
         result = self._agent_skill(row)
@@ -452,8 +480,16 @@ class Database:
                 ).fetchone()
         return self._agent_skill(row)
 
+    def list_agent_skill_assignments(self, user_id: str, skill_id: str) -> list[str]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT profile_id FROM agent_profile_skills WHERE user_id = ? AND skill_id = ? ORDER BY profile_id",
+                (user_id, skill_id),
+            ).fetchall()
+        return [str(row["profile_id"]) for row in rows]
+
     def update_agent_skill(self, user_id: str, skill_id: str, skill_data: dict[str, object]) -> dict[str, object] | None:
-        allowed = {"name", "description", "instructions", "enabled"}
+        allowed = {"name", "description", "instructions", "enabled", "catalog_version", "catalog_snapshot", "review_status"}
         changes = {key: value for key, value in skill_data.items() if key in allowed}
         if not changes:
             return self.get_agent_skill(user_id, skill_id)
@@ -461,12 +497,28 @@ class Database:
         values: list[object] = []
         for key, value in changes.items():
             assignments.append(f"{key} = ?")
-            values.append(int(value) if key == "enabled" else value)
+            values.append(int(value) if key == "enabled" else json.dumps(value) if key == "catalog_snapshot" else value)
+            if key == "catalog_snapshot":
+                assignments[-1] = "catalog_snapshot_json = ?"
         assignments.append("updated_at = ?")
         values.extend((utc_now(), user_id, skill_id))
         with self.connection() as connection:
             connection.execute(f"UPDATE agent_skills SET {', '.join(assignments)} WHERE user_id = ? AND id = ?", values)
         return self.get_agent_skill(user_id, skill_id)
+
+    def audit_agent_skill(self, user_id: str, skill_id: str, action: str, profile_id: str | None = None, details: dict[str, object] | None = None) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO agent_skill_audit (user_id, skill_id, profile_id, action, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, skill_id, profile_id, action, json.dumps(details or {}), utc_now()),
+            )
+
+    def list_agent_skill_audit(self, user_id: str, limit: int = 100) -> list[dict[str, object]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM agent_skill_audit WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, min(max(limit, 1), 200))
+            ).fetchall()
+        return [{**dict(row), "details": json.loads(row["details_json"])} for row in rows]
 
     def delete_agent_skill(self, user_id: str, skill_id: str) -> bool:
         with self.connection() as connection:
@@ -488,11 +540,31 @@ class Database:
                 ).fetchall()
                 if {row["id"] for row in rows} != set(skill_ids):
                     return False
+                approved_rows = connection.execute(
+                    f"SELECT id FROM agent_skills WHERE user_id = ? AND review_status = 'approved' AND id IN ({marks})",
+                    (user_id, *skill_ids),
+                ).fetchall()
+                if {row["id"] for row in approved_rows} != set(skill_ids):
+                    return False
+            previous_rows = connection.execute(
+                "SELECT skill_id FROM agent_profile_skills WHERE user_id = ? AND profile_id = ?", (user_id, profile_id)
+            ).fetchall()
+            previous_ids = {row["skill_id"] for row in previous_rows}
             connection.execute("DELETE FROM agent_profile_skills WHERE user_id = ? AND profile_id = ?", (user_id, profile_id))
             connection.executemany(
                 "INSERT INTO agent_profile_skills (user_id, profile_id, skill_id, created_at) VALUES (?, ?, ?, ?)",
                 [(user_id, profile_id, skill_id, utc_now()) for skill_id in skill_ids],
             )
+            for skill_id in previous_ids - set(skill_ids):
+                connection.execute(
+                    "INSERT INTO agent_skill_audit (user_id, skill_id, profile_id, action, details_json, created_at) VALUES (?, ?, ?, 'unassigned', '{}', ?)",
+                    (user_id, skill_id, profile_id, utc_now()),
+                )
+            for skill_id in set(skill_ids) - previous_ids:
+                connection.execute(
+                    "INSERT INTO agent_skill_audit (user_id, skill_id, profile_id, action, details_json, created_at) VALUES (?, ?, ?, 'assigned', '{}', ?)",
+                    (user_id, skill_id, profile_id, utc_now()),
+                )
         return True
 
     def unassign_agent_skill(self, user_id: str, profile_id: str, skill_id: str) -> bool:
@@ -613,6 +685,53 @@ class Database:
                 (email.lower(),),
             ).fetchone()
         return dict(row) if row else None
+
+    def user_has_active_executions(self, user_id: str) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM executions WHERE user_id = ? AND status IN "
+                "('planning', 'running', 'pausing', 'awaiting_approval') LIMIT 1",
+                (user_id,),
+            ).fetchone()
+        return row is not None
+
+    def delete_user_account(self, user_id: str) -> str:
+        """Delete all data owned by a user, unless an execution is still active."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is None:
+                return "not_found"
+
+            active_execution = connection.execute(
+                "SELECT 1 FROM executions WHERE user_id = ? AND status IN "
+                "('planning', 'running', 'pausing', 'awaiting_approval') LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            if active_execution:
+                return "active_executions"
+
+            execution_ids = "SELECT id FROM executions WHERE user_id = ?"
+            connection.execute(f"DELETE FROM execution_final_messages WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_attempts WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_approvals WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_tool_calls WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_artifacts WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_events WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_tasks WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute("DELETE FROM executions WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM conversation_connectors WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM conversations WHERE owner_id = ?", (user_id,))
+            connection.execute("DELETE FROM connector_oauth_states WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM connector_credentials WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM connector_connections WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM mcp_servers WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM agent_profile_skills WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM agent_skill_audit WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM auto_agent_capabilities WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM agent_skills WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM agent_profiles WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        return "deleted"
 
     def get_user(self, user_id: str) -> AuthUserRead | None:
         with self.connection() as connection:
