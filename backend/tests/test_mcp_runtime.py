@@ -32,6 +32,7 @@ class FakeMcpServer:
     def __init__(self, tools, **kwargs):
         self.tools = tools
         self.kwargs = kwargs
+        self.name = kwargs.get("name", "")
         self.entered = False
 
     async def __aenter__(self):
@@ -250,6 +251,13 @@ def test_conversation_activation_approves_non_destructive_tools(tmp_path):
         async with runtime.open_approved_servers("user-a", connector_ids, conversation_id=conversation_id) as servers:
             assert servers[0].kwargs["tool_filter"](None, tools[0]) is True
             assert servers[0].kwargs["tool_filter"](None, tools[1]) is False
+            assert servers[0].mcp_label == "Solana"
+            assert servers[0].mcp_server_key == f"mcp_{str(server.id).replace('-', '')[:12]}"
+            extractor = servers[0].kwargs["custom_data_extractor"]
+            leaked = SimpleNamespace(is_error=True, arguments={"auth_token": "secret-token"}, tool_output="secret-output")
+            assert extractor(leaked) == {"failed": True}
+            assert "secret-token" not in str(extractor(leaked))
+            assert extractor(SimpleNamespace(is_error=False)) == {"failed": False}
     asyncio.run(check_filter())
 
     again, same_ids = asyncio.run(runtime.activate_catalog_for_conversation(

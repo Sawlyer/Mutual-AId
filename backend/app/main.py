@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from app.auth import create_session, hash_password, token_digest, verify_password
 
-from app.agent import configure_openai, stream_assistant
+from app.agent import McpActivity, configure_openai, stream_assistant
 from app.mcp_assistant import install_mcp_assistant_instructions
 from app.agents.models import AgentProfileCreate, AgentProfileRead, AgentProfileUpdate
 from app.agents.service import AgentService, InvalidSkillAssignment
@@ -63,6 +63,7 @@ from app.schemas import (
     ConnectorPreferencesUpdate,
     ConnectorRead,
     HealthRead,
+    McpActivityRead,
     MessageCreate,
     MessageRead,
 )
@@ -96,6 +97,10 @@ def rate_limit(request: Request) -> None:
 
 def sse_event(event: str, payload: dict[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
+
+
+def _stored_mcp_activity(activities: dict[str, McpActivity]) -> list[McpActivityRead]:
+    return [McpActivityRead.model_validate(item.payload()) for item in activities.values()]
 
 
 def _mcp_row_is_listed(catalog: McpCatalog, row: dict[str, object]) -> bool:
@@ -566,9 +571,10 @@ async def get_messages(conversation_id: str, database: Db, user: CurrentUser) ->
     summary="Envoyer un message et recevoir la réponse en SSE",
     description=(
         "Le corps contient `content`. La réponse `text/event-stream` utilise les événements `user`, "
-        "`delta`, `mcp.suggestion`, `plan.ready`, `execution.created`, `done` et `error`; "
+        "`delta`, `mcp.activity`, `mcp.suggestion`, `plan.ready`, `execution.created`, `done` et `error`; "
         "chaque charge utile est JSON encodé sur une ligne `data:`. "
-        "Les événements d’analyse privée ne sont jamais transmis."
+        "`mcp.activity` ne contient que l’identifiant d’appel, le nom du serveur, le nom de l’outil et le statut. "
+        "Les arguments, les résultats et les événements d’analyse privée ne sont jamais transmis."
     ),
     responses={
         200: {
@@ -705,6 +711,7 @@ async def send_message_stream(
                     yield sse_event("error", {"message": "La demande n’a pas pu être planifiée. Réessayez dans un instant."})
                     return
             answer_parts: list[str] = []
+            activities: dict[str, McpActivity] = {}
             try:
                 tool_context = ConnectorToolContext(
                     user.id, database, request.app.state.google_oauth, request.app.state.github_oauth
@@ -714,17 +721,23 @@ async def send_message_stream(
                 async with request.app.state.mcp_runtime.open_approved_servers(
                     user.id, free_mcp_ids, conversation_id=conversation_id,
                 ) as mcp_servers:
-                    async for delta in stream_assistant(
+                    async for chunk in stream_assistant(
                         conversation_id, prompt, settings, available_tools, tool_context, mcp_servers,
                     ):
                         if await request.is_disconnected():
                             raise asyncio.CancelledError
-                        answer_parts.append(delta)
-                        yield sse_event("delta", {"delta": delta})
+                        if isinstance(chunk, McpActivity):
+                            activities[chunk.call_id] = chunk
+                            yield sse_event("mcp.activity", chunk.payload())
+                            continue
+                        answer_parts.append(chunk)
+                        yield sse_event("delta", {"delta": chunk})
                 answer = "".join(answer_parts).strip()
                 if not answer:
                     raise RuntimeError("Agent completed without user-visible text output")
-                assistant_message = database.create_message(conversation_id, "assistant", answer)
+                assistant_message = database.create_message(
+                    conversation_id, "assistant", answer, mcp_activity=_stored_mcp_activity(activities),
+                )
                 yield sse_event("done", {"message": assistant_message.model_dump(mode="json")})
             except asyncio.CancelledError:
                 logger.info("Client disconnected during assistant stream for conversation %s", conversation_id)

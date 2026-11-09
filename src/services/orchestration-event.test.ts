@@ -15,6 +15,14 @@ describe('parseOrchestrationEvent', () => {
     })
   })
 
+  it('parses an MCP activity without keeping tool arguments or results', () => {
+    expect(parseOrchestrationEvent('event: mcp.activity\ndata: {"id":"call_1","server":"Docs","tool":"search","status":"running","arguments":{"token":"secret"},"output":"secret-output"}')).toEqual({
+      type: 'mcp.activity',
+      activity: { id: 'call_1', server: 'Docs', tool: 'search', status: 'running' },
+    })
+    expect(parseOrchestrationEvent('event: mcp.activity\ndata: {"id":"call_1","server":"Docs","tool":"search","status":"leaked"}')).toBeNull()
+  })
+
   it('keeps text deltas and ignores unknown or malformed events', () => {
     expect(parseOrchestrationEvent('event: delta\ndata: {"delta":"Bonjour"}')).toEqual({ type: 'delta', delta: 'Bonjour' })
     expect(parseOrchestrationEvent('event: future.event\ndata: {}')).toBeNull()

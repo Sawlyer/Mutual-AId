@@ -6,11 +6,37 @@ from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
 
-from app.schemas import AuthUserRead, ConversationRead, MessageRead
+from pydantic import ValidationError
+
+from app.schemas import AuthUserRead, ConversationRead, McpActivityRead, MessageRead
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _message_from_row(row: sqlite3.Row) -> MessageRead:
+    data = dict(row)
+    raw_activity = data.pop("mcp_activity_json", None)
+    return MessageRead(**data, mcp_activity=_load_mcp_activity(raw_activity))
+
+
+def _load_mcp_activity(raw: object) -> list[McpActivityRead]:
+    if not isinstance(raw, str) or not raw.strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    activity: list[McpActivityRead] = []
+    for entry in parsed[:20]:
+        try:
+            activity.append(McpActivityRead.model_validate(entry))
+        except ValidationError:
+            continue
+    return activity
 
 
 class Database:
@@ -52,7 +78,8 @@ class Database:
                     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    execution_id TEXT
+                    execution_id TEXT,
+                    mcp_activity_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS messages_conversation_order
                     ON messages(conversation_id, created_at, id);
@@ -269,6 +296,8 @@ class Database:
             message_columns = {row["name"] for row in connection.execute("PRAGMA table_info(messages)")}
             if "execution_id" not in message_columns:
                 connection.execute("ALTER TABLE messages ADD COLUMN execution_id TEXT")
+            if "mcp_activity_json" not in message_columns:
+                connection.execute("ALTER TABLE messages ADD COLUMN mcp_activity_json TEXT")
             if "owner_id" not in conversation_columns:
                 connection.execute("ALTER TABLE conversations ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'local-user'")
             task_columns = {row["name"] for row in connection.execute("PRAGMA table_info(execution_tasks)")}
@@ -797,13 +826,22 @@ class Database:
             cursor = connection.execute("DELETE FROM conversations WHERE id = ? AND owner_id = ?", (conversation_id, owner_id))
         return cursor.rowcount > 0
 
-    def create_message(self, conversation_id: str, role: str, content: str, execution_id: str | None = None) -> MessageRead:
+    def create_message(
+        self, conversation_id: str, role: str, content: str, execution_id: str | None = None,
+        mcp_activity: list[McpActivityRead] | None = None,
+    ) -> MessageRead:
         message_id = str(uuid4())
         timestamp = utc_now()
+        activity = list(mcp_activity or [])
+        encoded = json.dumps(
+            [item.model_dump(mode="json") for item in activity], ensure_ascii=False, separators=(",", ":"),
+        ) if activity else None
         with self.connection() as connection:
             connection.execute(
-                "INSERT INTO messages (id, conversation_id, role, content, created_at, execution_id) VALUES (?, ?, ?, ?, ?, ?)",
-                (message_id, conversation_id, role, content, timestamp, execution_id),
+                """INSERT INTO messages
+                   (id, conversation_id, role, content, created_at, execution_id, mcp_activity_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (message_id, conversation_id, role, content, timestamp, execution_id, encoded),
             )
             connection.execute(
                 """UPDATE conversations SET updated_at = ?,
@@ -812,7 +850,10 @@ class Database:
                    WHERE id = ?""",
                 (timestamp, role, content.strip(), conversation_id),
             )
-        return MessageRead(id=message_id, conversation_id=conversation_id, role=role, content=content, created_at=timestamp, execution_id=execution_id)
+        return MessageRead(
+            id=message_id, conversation_id=conversation_id, role=role, content=content,
+            created_at=timestamp, execution_id=execution_id, mcp_activity=activity,
+        )
 
     def list_messages(self, conversation_id: str) -> list[MessageRead]:
         with self.connection() as connection:
@@ -820,7 +861,7 @@ class Database:
                 "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at, rowid",
                 (conversation_id,),
             ).fetchall()
-        return [MessageRead(**dict(row)) for row in rows]
+        return [_message_from_row(row) for row in rows]
 
     def get_user_analytics(self, user_id: str) -> dict[str, object]:
         with self.connection() as connection:

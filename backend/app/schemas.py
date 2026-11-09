@@ -152,6 +152,13 @@ class ConnectorPreferencesRead(BaseModel):
     connectors: list[ConnectorRead]
 
 
+class McpActivityRead(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    server: str = Field(min_length=1, max_length=80)
+    tool: str = Field(min_length=1, max_length=80)
+    status: Literal["running", "done", "failed"]
+
+
 class MessageRead(BaseModel):
     id: str
     conversation_id: str
@@ -159,6 +166,7 @@ class MessageRead(BaseModel):
     content: str
     created_at: datetime
     execution_id: str | None = None
+    mcp_activity: list[McpActivityRead] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

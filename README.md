@@ -85,7 +85,7 @@ Le mode utilisé par défaut est `openai`. Pour revenir au mode de démonstratio
 - `GET /api/conversations/{id}/messages` : récupérer son historique
 - `POST /api/conversations/{id}/messages/stream` : envoyer `{ "content": "…" }` et recevoir `text/event-stream`
 
-Le flux SSE émet `user`, `delta`, `mcp.suggestion`, `plan.ready`, `execution.created`, `done` et `error`. Seuls les deltas de texte destinés à l’utilisateur sont transmis ; le raisonnement privé et les erreurs détaillées restent côté serveur. Une suggestion MCP ne contient que l’identifiant de fiche, le nom et la catégorie.
+Le flux SSE émet `user`, `delta`, `mcp.activity`, `mcp.suggestion`, `plan.ready`, `execution.created`, `done` et `error`. Seuls les deltas de texte destinés à l’utilisateur sont transmis ; le raisonnement privé et les erreurs détaillées restent côté serveur. Une suggestion MCP ne contient que l’identifiant de fiche, le nom et la catégorie. `mcp.activity` ne contient que l’identifiant d’appel, le nom du serveur, le nom de l’outil et le statut.
 
 Toutes les routes de conversation et de connecteur nécessitent une session. Les routes historiques `/dashboard`, `/missions/*` et `/executions/*` redirigent vers le chat : elles ne créent plus de données de démonstration qui ressemblent à de vraies exécutions.
 

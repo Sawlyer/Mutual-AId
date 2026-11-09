@@ -223,12 +223,20 @@ def safe_mcp_http_client(*, allow_loopback: bool) -> Callable[..., httpx2.AsyncC
     return factory
 
 
+def _mcp_call_status(context: object) -> dict[str, bool]:
+    """Record only whether the MCP call failed. Arguments and output stay on the server."""
+    return {"failed": getattr(context, "is_error", None) is True}
+
+
 class _AuthorizedMcpServer:
     """Re-checks the database immediately before a remote tool call."""
 
-    def __init__(self, inner: object, authorize: Callable[[str], None]) -> None:
+    def __init__(self, inner: object, authorize: Callable[[str], None], display_name: str) -> None:
         self._inner = inner
         self._authorize = authorize
+        inner_name = getattr(inner, "name", None)
+        self.mcp_server_key = inner_name if isinstance(inner_name, str) else ""
+        self.mcp_label = display_name
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._inner, name)
@@ -569,6 +577,7 @@ class McpRuntime:
                     lambda tool_name, server_id=server_id: self.authorize_tool_call(
                         user_id, server_id, tool_name, conversation_id, agent_profile_id,
                     ),
+                    str(row["name"]),
                 ))
             yield servers
 
@@ -609,4 +618,5 @@ class McpRuntime:
             require_approval="never",
             failure_error_function=None,
             tool_output_guardrails=[_limit_tool_output],
+            custom_data_extractor=_mcp_call_status,
         )

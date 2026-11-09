@@ -8,11 +8,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { ConnectorSelector } from '@/features/chat/connector-selector'
+import { McpActivityList } from '@/features/chat/mcp-activity'
 import { useConversationsStore } from '@/stores/use-conversations-store'
 import { useOpenAIChatStore } from '@/stores/use-openai-chat-store'
 import { useAuthStore } from '@/stores/use-auth-store'
 import { ChatServiceError, chatAdapter, type ChatBackendHealth, type ConnectorCatalogItem, type McpSuggestion } from '@/services/chat-adapters'
-import type { Message } from '@/types/domain'
+import type { McpActivity, Message } from '@/types/domain'
 import { ExecutionCard } from '@/features/executions/execution-card'
 import type { Execution } from '@/types/execution'
 
@@ -23,6 +24,18 @@ const suggestions = [
 ]
 const EMPTY_CONNECTOR_IDS: string[] = []
 const pendingMcpSuggestions = new Map<string, McpSuggestion[]>()
+
+function applyMcpActivity(message: Message, activity: McpActivity): Message {
+  const current = message.mcpActivity ?? []
+  const index = current.findIndex((item) => item.id === activity.id)
+  const mcpActivity = index < 0 ? [...current, activity] : current.map((item, itemIndex) => itemIndex === index ? activity : item)
+  return { ...message, mcpActivity }
+}
+
+function stopMcpActivity(message: Message): Message {
+  if (!message.mcpActivity?.some((item) => item.status === 'running')) return message
+  return { ...message, mcpActivity: message.mcpActivity.map((item) => item.status === 'running' ? { ...item, status: 'failed' } : item) }
+}
 
 function McpSuggestionCard({ suggestions, disabled, activatingId, onActivate, onDismiss }: {
   suggestions: McpSuggestion[]
@@ -93,6 +106,7 @@ function McpSuggestionCard({ suggestions, disabled, activatingId, onActivate, on
 
 function AssistantMessage({ message, onExecutionComplete }: { message: Message; onExecutionComplete?: () => void }) {
   const [copied, setCopied] = useState(false)
+  const activity = message.mcpActivity ?? []
   async function copy() {
     await navigator.clipboard.writeText(message.content)
     setCopied(true)
@@ -102,7 +116,8 @@ function AssistantMessage({ message, onExecutionComplete }: { message: Message; 
     <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-xl border border-primary/15 bg-primary/8 text-primary"><Sparkles aria-hidden="true" className="size-4" /></span>
     <div className="min-w-0 flex-1">
       <div className="mb-1.5 flex flex-wrap items-center gap-2"><span className="text-xs font-semibold">Mutual-AId</span>{message.simulated && <Badge variant="outline" className="h-5 text-[10px]">Réponse simulée</Badge>}</div>
-      {message.status === 'streaming' && <p role="status" aria-live="polite" className="mb-1 text-xs text-muted-foreground">Mutual-AId rédige…</p>}
+      {message.status === 'streaming' && activity.length === 0 && <p role="status" aria-live="polite" className="mb-1 text-xs text-muted-foreground">Mutual-AId rédige…</p>}
+      <McpActivityList items={activity} live={message.status === 'streaming'} />
       <div className="chat-markdown max-w-3xl text-sm leading-7 text-foreground/90">
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
           a: ({ ...props }) => <a {...props} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-4" />,
@@ -187,7 +202,8 @@ export function ChatPage() {
   const [health, setHealth] = useState<ChatBackendHealth | null>(null)
   const [connectorCatalog, setConnectorCatalog] = useState<ConnectorCatalogItem[]>([])
   const lastMessageText = messages.at(-1)?.content
-  useEffect(() => { if (stickToBottom.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }, [messages.length, lastMessageText])
+  const lastActivity = messages.at(-1)?.mcpActivity?.map((item) => `${item.id}:${item.status}`).join('|')
+  useEffect(() => { if (stickToBottom.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }, [messages.length, lastMessageText, lastActivity])
 
   useEffect(() => {
     if (chatAdapter.mode !== 'openai') return
@@ -269,6 +285,9 @@ export function ChatPage() {
           if (!id) return
           pendingMcpSuggestions.set(id, suggestions)
           setMcpSuggestionState({ conversationId: id, suggestions })
+        }, (activity) => {
+          const current = useOpenAIChatStore.getState().messages.find((message) => message.id === pendingId)
+          if (current) upsertRemoteMessage(applyMcpActivity(current, activity))
         }, useConnectedTools)
         removeRemoteMessage(pendingId)
         if (response) upsertRemoteMessage(response)
@@ -283,7 +302,7 @@ export function ChatPage() {
         const interrupted = error instanceof DOMException && error.name === 'AbortError'
         const visibleMessage = interrupted ? 'Réponse interrompue.' : error instanceof Error ? error.message : 'Le message n’a pas pu être traité.'
         const pendingMessage = useOpenAIChatStore.getState().messages.find((message) => message.id === pendingId)
-        if (pendingMessage) upsertRemoteMessage({ ...pendingMessage, content: visibleMessage, status: 'failed' })
+        if (pendingMessage) upsertRemoteMessage({ ...stopMcpActivity(pendingMessage), content: visibleMessage, status: 'failed' })
         if (!interrupted) {
           setChatError(visibleMessage)
           try { useOpenAIChatStore.getState().setConversations(await chatAdapter.listConversations()) } catch { /* The original request error remains visible. */ }
@@ -319,7 +338,10 @@ export function ChatPage() {
           const current = useOpenAIChatStore.getState().messages.find((message) => message.id === pendingId)
           if (current) upsertRemoteMessage({ ...current, content: current.content + delta })
         },
-        undefined, undefined, false, true,
+        undefined, undefined, (activity) => {
+          const current = useOpenAIChatStore.getState().messages.find((message) => message.id === pendingId)
+          if (current) upsertRemoteMessage(applyMcpActivity(current, activity))
+        }, false, true,
       )
       removeRemoteMessage(pendingId)
       if (!response) throw new Error('La réponse n’a pas pu être reprise.')
@@ -333,7 +355,7 @@ export function ChatPage() {
       const interrupted = error instanceof DOMException && error.name === 'AbortError'
       const visibleMessage = interrupted ? 'Réponse interrompue.' : error instanceof Error ? error.message : 'La réponse n’a pas pu être reprise.'
       const pendingMessage = useOpenAIChatStore.getState().messages.find((message) => message.id === pendingId)
-      if (pendingMessage) upsertRemoteMessage({ ...pendingMessage, content: visibleMessage, status: 'failed' })
+      if (pendingMessage) upsertRemoteMessage({ ...stopMcpActivity(pendingMessage), content: visibleMessage, status: 'failed' })
       if (!interrupted) setChatError(visibleMessage)
     } finally {
       if (activeRequest.current === controller) activeRequest.current = null

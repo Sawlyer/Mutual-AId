@@ -1,5 +1,5 @@
 import { useConversationsStore } from '@/stores/use-conversations-store'
-import type { Conversation, Message } from '@/types/domain'
+import type { Conversation, McpActivity, Message } from '@/types/domain'
 import type { Execution } from '@/types/execution'
 
 export interface BackendConversation {
@@ -17,6 +17,7 @@ export interface BackendMessage {
   content: string
   created_at: string
   execution_id?: string | null
+  mcp_activity?: unknown
 }
 
 export interface McpSuggestion {
@@ -27,10 +28,35 @@ export interface McpSuggestion {
 
 export type OrchestrationEvent =
   | { type: 'delta'; delta: string }
+  | { type: 'mcp.activity'; activity: McpActivity }
   | { type: 'mcp.suggestion'; suggestions: McpSuggestion[] }
   | { type: 'execution.created'; execution: Execution }
   | { type: 'done'; message: BackendMessage | null }
   | { type: 'error'; message: string }
+
+export function readMcpActivityItem(value: unknown): McpActivity | null {
+  if (!value || typeof value !== 'object') return null
+  const activity = value as Record<string, unknown>
+  const id = activity.id
+  const server = activity.server
+  const tool = activity.tool
+  const status = activity.status
+  if (typeof id !== 'string' || typeof server !== 'string' || typeof tool !== 'string') return null
+  if (status !== 'running' && status !== 'done' && status !== 'failed') return null
+  if (!id || id.length > 80 || !server.trim() || server.length > 80 || !tool.trim() || tool.length > 80) return null
+  return { id, server, tool, status }
+}
+
+export function readMcpActivity(value: unknown): McpActivity[] {
+  if (!Array.isArray(value)) return []
+  const items: McpActivity[] = []
+  for (const entry of value) {
+    if (items.length >= 20) break
+    const activity = readMcpActivityItem(entry)
+    if (activity) items.push(activity)
+  }
+  return items
+}
 
 export function parseOrchestrationEvent(frame: string): OrchestrationEvent | null {
   let event = 'message'
@@ -44,6 +70,10 @@ export function parseOrchestrationEvent(frame: string): OrchestrationEvent | nul
   try { payload = JSON.parse(data.join('\n')) as Record<string, unknown> }
   catch { return null }
   if (event === 'delta' && typeof payload.delta === 'string') return { type: 'delta', delta: payload.delta }
+  if (event === 'mcp.activity') {
+    const activity = readMcpActivityItem(payload)
+    return activity ? { type: 'mcp.activity', activity } : null
+  }
   if (event === 'mcp.suggestion' && Array.isArray(payload.suggestions)) {
     const suggestions = payload.suggestions.flatMap((item) => {
       if (!item || typeof item !== 'object') return []
@@ -187,7 +217,7 @@ export interface ChatAdapter {
   getConversationConnectors(conversationId: string): Promise<ConversationConnectorPreferences>
   setConversationConnectors(conversationId: string, connectorIds: string[]): Promise<ConversationConnectorPreferences>
   activateConversationMcp(conversationId: string, catalogId: string, authToken?: string): Promise<McpConversationActivation>
-  streamMessage(conversationId: string, content: string, signal: AbortSignal, connectorIds: string[], onDelta: (delta: string) => void, onExecution?: (execution: Execution) => void, onSuggestion?: (suggestions: McpSuggestion[]) => void, useConnectedTools?: boolean, resumeWithTools?: boolean): Promise<Message | null>
+  streamMessage(conversationId: string, content: string, signal: AbortSignal, connectorIds: string[], onDelta: (delta: string) => void, onExecution?: (execution: Execution) => void, onSuggestion?: (suggestions: McpSuggestion[]) => void, onMcpActivity?: (activity: McpActivity) => void, useConnectedTools?: boolean, resumeWithTools?: boolean): Promise<Message | null>
   checkHealth(): Promise<ChatBackendHealth>
 }
 
@@ -206,7 +236,12 @@ function asConversation(conversation: BackendConversation): Conversation {
 }
 
 function asMessage(message: BackendMessage): Message {
-  return { id: message.id, conversationId: message.conversation_id, role: message.role, content: message.content, createdAt: message.created_at, status: 'complete', simulated: false, executionId: message.execution_id ?? undefined }
+  const mcpActivity = readMcpActivity(message.mcp_activity)
+  return {
+    id: message.id, conversationId: message.conversation_id, role: message.role, content: message.content,
+    createdAt: message.created_at, status: 'complete', simulated: false, executionId: message.execution_id ?? undefined,
+    ...(mcpActivity.length ? { mcpActivity } : {}),
+  }
 }
 
 export class ChatServiceError extends Error {
@@ -443,7 +478,7 @@ class OpenAIAdapter implements ChatAdapter {
     return this.request<ChatBackendHealth>('/health')
   }
 
-  async streamMessage(conversationId: string, content: string, signal: AbortSignal, connectorIds: string[], onDelta: (delta: string) => void, onExecution?: (execution: Execution) => void, onSuggestion?: (suggestions: McpSuggestion[]) => void, useConnectedTools = false, resumeWithTools = false) {
+  async streamMessage(conversationId: string, content: string, signal: AbortSignal, connectorIds: string[], onDelta: (delta: string) => void, onExecution?: (execution: Execution) => void, onSuggestion?: (suggestions: McpSuggestion[]) => void, onMcpActivity?: (activity: McpActivity) => void, useConnectedTools = false, resumeWithTools = false) {
     let response: Response
     try {
       response = await fetch(`${this.baseUrl}/conversations/${encodeURIComponent(conversationId)}/messages/stream`, {
@@ -474,6 +509,7 @@ class OpenAIAdapter implements ChatAdapter {
       const parsed = parseOrchestrationEvent(frame)
       if (!parsed) return
       if (parsed.type === 'delta') onDelta(parsed.delta)
+      if (parsed.type === 'mcp.activity') onMcpActivity?.(parsed.activity)
       if (parsed.type === 'mcp.suggestion') onSuggestion?.(parsed.suggestions)
       if (parsed.type === 'execution.created') onExecution?.(parsed.execution)
       if (parsed.type === 'done') {
