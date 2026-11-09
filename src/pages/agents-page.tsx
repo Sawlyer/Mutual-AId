@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { AgentProfileCard } from '@/features/agents/agent-profile-card'
 import { AgentProfileForm } from '@/features/agents/agent-profile-form'
+import { SkillMarketplace } from '@/features/agents/skill-marketplace'
 import { updateProfileSkills } from '@/features/agents/agent-profile-utils'
 import { agentService } from '@/services/agent-service'
 import { chatAdapter } from '@/services/chat-adapters'
@@ -96,5 +97,6 @@ export function AgentsPage() {
       {!loading && !error && catalog?.profiles.length === 0 && <div className="rounded-xl border border-dashed p-8 text-center"><Bot className="mx-auto size-7 text-muted-foreground" /><p className="mt-3 font-medium">Aucun spécialiste pour le moment</p><p className="mt-1 text-sm text-muted-foreground">Un agent adapté sera créé automatiquement quand une demande complexe le nécessitera.</p></div>}
       {!loading && catalog?.profiles.map((profile) => <AgentProfileCard key={profile.id} profile={profile} capabilities={catalog.capabilities} onEdit={setEditor} onToggle={(item) => void toggle(item)} onDelete={(item) => void remove(item)} />)}
     </section>
+    <SkillMarketplace />
   </div>
 }
