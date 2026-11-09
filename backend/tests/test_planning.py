@@ -115,3 +115,29 @@ def test_planner_receives_enabled_agent_skill_summaries(tmp_path, monkeypatch):
     assert "Source checks" in captured[0]
     assert "Verifies references." in captured[0]
     assert "Disabled skill" not in captured[0]
+
+
+def test_an_unusable_plan_becomes_a_direct_answer(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.config import Settings
+    from app.planning import service as planning_service
+    from app.planning.schemas import PlannedTask, PlanningDecision, PlanningRequest
+
+    async def fake_run(_agent, _user_input, **_kwargs):
+        return SimpleNamespace(final_output=PlanningDecision(
+            summary="Créer le diaporama",
+            tasks=[PlannedTask(id="slides", title="Créer les diapositives", capability_ids=["design"])],
+            requires_orchestration=True,
+        ))
+
+    monkeypatch.setattr(planning_service.Runner, "run", fake_run)
+    planner = planning_service.Planner(Settings(openai_api_key="key", openai_model="test-model"))
+    decision = asyncio.run(planner.plan(
+        PlanningRequest(user_id="user", conversation_id="c", message="Je veux créer un magnifique diapo sur Gamma"),
+        [],
+        [],
+    ))
+
+    assert decision.requires_orchestration is False
+    assert decision.tasks == []

@@ -17,6 +17,7 @@ export const router = createBrowserRouter([
       { path: 'executions/:executionId', lazy: () => import('@/pages/execution-page').then((module) => ({ Component: module.ExecutionPage })) },
       { path: 'executions', lazy: () => import('@/pages/executions-page').then((module) => ({ Component: module.ExecutionsPage })) },
       { path: 'connectors', lazy: () => import('@/pages/connectors-page').then((module) => ({ Component: module.ConnectorsPage })) },
+      { path: 'connectors/mcp', lazy: () => import('@/pages/mcp-catalog-page').then((module) => ({ Component: module.McpCatalogPage })) },
       { path: 'dashboard', element: <Navigate to="/" replace /> },
       { path: 'missions/*', element: <Navigate to="/" replace /> },
       { path: 'agents', lazy: () => import('@/pages/agents-page').then((module) => ({ Component: module.AgentsPage })) },

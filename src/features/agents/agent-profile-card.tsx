@@ -2,6 +2,7 @@ import { Bot, Pencil, Power, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { AgentMcpGrants } from '@/features/agents/agent-mcp-grants'
 import { getEnabledSkillNames } from '@/features/agents/agent-profile-utils'
 import type { AgentCapability, AgentProfile } from '@/types/agent'
 
@@ -23,6 +24,6 @@ export function AgentProfileCard({ profile, capabilities, onEdit, onToggle, onDe
       <p className="mt-2 text-xs text-muted-foreground">Compétences : {skillNames.length ? skillNames.join(' · ') : 'aucune compétence activée'}</p>
       {labels.length > 0 && <p className="text-xs text-muted-foreground">Spécialisations : {labels.join(' · ')}</p>}
       <p className="text-xs text-muted-foreground">Domaine {profile.domain}</p>
-    </div><div className="flex shrink-0 gap-1"><Button type="button" variant="ghost" size="icon" aria-label={`Modifier ${profile.name}`} onClick={() => onEdit(profile)}><Pencil /></Button><Button type="button" variant="ghost" size="icon" aria-label={`${profile.enabled ? 'Désactiver' : 'Activer'} ${profile.name}`} onClick={() => onToggle(profile)}><Power /></Button><Button type="button" variant="ghost" size="icon" aria-label={`Supprimer ${profile.name}`} onClick={() => onDelete(profile)}><Trash2 /></Button></div>
+    </div><div className="flex shrink-0 gap-1"><AgentMcpGrants profileId={profile.id} profileName={profile.name} /><Button type="button" variant="ghost" size="icon" aria-label={`Modifier ${profile.name}`} onClick={() => onEdit(profile)}><Pencil /></Button><Button type="button" variant="ghost" size="icon" aria-label={`${profile.enabled ? 'Désactiver' : 'Activer'} ${profile.name}`} onClick={() => onToggle(profile)}><Power /></Button><Button type="button" variant="ghost" size="icon" aria-label={`Supprimer ${profile.name}`} onClick={() => onDelete(profile)}><Trash2 /></Button></div>
   </CardContent></Card>
 }

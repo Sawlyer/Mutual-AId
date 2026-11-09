@@ -8,10 +8,12 @@ import { chatAdapter, type McpServerRecord } from '@/services/chat-adapters'
 interface McpServerFormProps {
   onCreated: (server: McpServerRecord) => void
   onUpdated: (server: McpServerRecord) => void
+  catalogId?: string
+  initialName?: string
 }
 
-export function McpServerForm({ onCreated, onUpdated }: McpServerFormProps) {
-  const [name, setName] = useState('')
+export function McpServerForm({ onCreated, onUpdated, catalogId, initialName = '' }: McpServerFormProps) {
+  const [name, setName] = useState(initialName)
   const [url, setUrl] = useState('')
   const [authToken, setAuthToken] = useState('')
   const [busy, setBusy] = useState(false)
@@ -34,7 +36,9 @@ export function McpServerForm({ onCreated, onUpdated }: McpServerFormProps) {
 
     setBusy(true)
     try {
-      const server = await chatAdapter.createMcpServer({ name: name.trim(), url: normalizedUrl, ...(authToken ? { auth_token: authToken } : {}) })
+      const server = await chatAdapter.createMcpServer({
+        name: name.trim(), url: normalizedUrl, ...(authToken ? { auth_token: authToken } : {}), ...(catalogId ? { catalog_id: catalogId } : {}),
+      })
       setAuthToken('')
       setName('')
       setUrl('')

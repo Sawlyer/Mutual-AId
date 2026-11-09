@@ -60,5 +60,5 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest
 - Ne pas élargir les scopes OAuth. Lecture seule : `GMAIL_READ_SCOPE`, `DRIVE_METADATA_READ_SCOPE`, `CALENDAR_READ_SCOPE` (`backend/app/connectors/google_oauth.py`) et `GITHUB_READ_PERMISSIONS` (`backend/app/connectors/github_oauth.py`). `CALENDAR_WRITE_SCOPE` n’est pas un scope à demander.
 - Tout outil passe par `ToolRegistry.tools_for_user` dans `backend/app/connectors/tools.py` : connecteur sélectionné, compte connecté, scopes accordés, et approbation humaine si `access` vaut `write`.
 - Session en cookie HttpOnly. Ne pas accepter un identifiant utilisateur envoyé par le client.
-- Les événements SSE visibles sont `user`, `delta`, `plan.ready`, `execution.created`, `done` et `error`. Le raisonnement privé, les secrets et les erreurs provider brutes restent côté serveur.
+- Les événements SSE visibles sont `user`, `delta`, `mcp.activity`, `mcp.suggestion`, `plan.ready`, `execution.created`, `done` et `error`. `mcp.activity` indique qu’un outil MCP a été appelé : identifiant d’appel, nom du serveur, nom de l’outil et statut. Les arguments, les résultats, le raisonnement privé, les secrets et les erreurs provider brutes restent côté serveur.
 - `backend/app/agents/skills.py` décrit le modèle des skills produit. Ne pas y ranger les skills de développement.

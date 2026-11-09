@@ -12,7 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from app.auth import create_session, hash_password, token_digest, verify_password
 
-from app.agent import configure_openai, stream_assistant
+from app.agent import McpActivity, configure_openai, stream_assistant
+from app.mcp_assistant import install_mcp_assistant_instructions
 from app.agents.models import AgentProfileCreate, AgentProfileRead, AgentProfileUpdate
 from app.agents.service import AgentService, InvalidSkillAssignment, UnsafeGeneratedSkill
 from app.agents.models import AgentSkillCreate, AgentSkillUpdate
@@ -34,9 +35,18 @@ from app.connectors.github_api import github_list_issues, github_list_repositori
 from app.connectors.github_oauth import GITHUB_READ_PERMISSIONS, GitHubAppOAuthClient, GitHubOAuthNotConfigured
 from app.connectors.context import ConnectorToolContext
 from app.connectors.oauth import OAuthStateStore, TokenVault
-from app.connectors.mcp_models import McpServerCreate, McpServerRead, McpServerUpdateTools, validate_public_endpoint
+from app.connectors.mcp_catalog import McpCatalog, is_free_server, refresh_catalog
+from app.connectors.mcp_models import (
+    AgentMcpToolsRead, AgentMcpToolsUpdate, McpCatalogEntry, McpCatalogPage, McpCatalogRefresh,
+    McpConversationActivation, McpConversationActivationRead, McpCredentialUpdate, McpServerCreate,
+    McpServerEnabledUpdate, McpServerRead, McpServerUpdateTools, McpSuggestionQuery, McpSuggestions,
+    validate_public_endpoint,
+)
 from app.connectors.mcp_service import McpService
-from app.connectors.mcp_runtime import MCP_CONNECTOR_PREFIX, McpAuthorizationError, McpRuntime
+from app.connectors.mcp_runtime import (
+    MAX_CONVERSATION_CONNECTORS, MCP_CONNECTOR_PREFIX, ConversationMcpError, McpAuthorizationError, McpRuntime,
+    install_secret_log_filter, refusal_detail,
+)
 from app.config import Settings
 from app.db import Database
 from app.schemas import (
@@ -54,6 +64,7 @@ from app.schemas import (
     ConnectorPreferencesUpdate,
     ConnectorRead,
     HealthRead,
+    McpActivityRead,
     MessageCreate,
     MessageRead,
 )
@@ -87,6 +98,64 @@ def rate_limit(request: Request) -> None:
 
 def sse_event(event: str, payload: dict[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
+
+
+def _stored_mcp_activity(activities: dict[str, McpActivity]) -> list[McpActivityRead]:
+    return [McpActivityRead.model_validate(item.payload()) for item in activities.values()]
+
+
+def _mcp_row_is_listed(catalog: McpCatalog, row: dict[str, object]) -> bool:
+    catalog_id = str(row.get("catalog_id") or "")
+    if catalog_id:
+        entry = catalog.get(catalog_id)
+        if entry is not None and not is_free_server(entry):
+            return False
+    return not catalog.charges_for_endpoint(str(row.get("url") or ""))
+
+
+def _without_paid_mcp_connectors(
+    catalog: McpCatalog, database: Database, user_id: str, connector_ids: list[str],
+) -> list[str]:
+    visible: list[str] = []
+    for connector_id in connector_ids:
+        if connector_id.startswith(MCP_CONNECTOR_PREFIX):
+            row = database.get_mcp_server(user_id, connector_id.removeprefix(MCP_CONNECTOR_PREFIX))
+            if row is None or not _mcp_row_is_listed(catalog, row):
+                continue
+        visible.append(connector_id)
+    return visible
+
+
+def _paid_mcp_connector_ids(catalog: McpCatalog, database: Database, user_id: str) -> set[str]:
+    paid: set[str] = set()
+    for row in database.list_mcp_servers(user_id):
+        if not _mcp_row_is_listed(catalog, row):
+            paid.add(f"{MCP_CONNECTOR_PREFIX}{row['id']}")
+    return paid
+
+
+def _mcp_can_run(runtime: McpRuntime, user_id: str, row: dict[str, object]) -> bool:
+    try:
+        runtime.validate_selection(user_id, [f"{MCP_CONNECTOR_PREFIX}{row['id']}"])
+    except McpAuthorizationError:
+        return False
+    return True
+
+
+def _attach_ready_mcp_servers(
+    database: Database, user_id: str, conversation_id: str, connector_ids: list[str], rows: list[dict[str, object]],
+) -> tuple[list[str], list[str]]:
+    updated = list(connector_ids)
+    for row in rows:
+        connector_id = f"{MCP_CONNECTOR_PREFIX}{row['id']}"
+        if connector_id in updated:
+            continue
+        if len(updated) >= MAX_CONVERSATION_CONNECTORS:
+            break
+        updated.append(connector_id)
+    if updated != list(connector_ids):
+        database.set_conversation_connector_ids(user_id, conversation_id, updated)
+    return updated, [item for item in updated if item.startswith(MCP_CONNECTOR_PREFIX)]
 
 
 def get_database(request: Request) -> Database:
@@ -267,6 +336,23 @@ async def update_agent(profile_id: str, payload: AgentProfileUpdate, service: An
     if profile is None:
         raise HTTPException(status_code=404, detail="Profil introuvable.")
     return profile
+
+
+@router.get("/agents/{profile_id}/mcp-tools", response_model=AgentMcpToolsRead, summary="Lire les outils MCP affectés à un agent")
+async def list_agent_mcp_tools(profile_id: str, database: Db, settings: AppSettings, user: CurrentUser) -> AgentMcpToolsRead:
+    if database.get_agent_profile(user.id, profile_id) is None:
+        raise HTTPException(status_code=404, detail="Profil introuvable.")
+    del settings
+    return AgentMcpToolsRead(tools=database.list_agent_mcp_tools(user.id, profile_id))
+
+
+@router.put("/agents/{profile_id}/mcp-tools", response_model=AgentMcpToolsRead,
+            dependencies=[Depends(rate_limit), TrustedOrigin], summary="Affecter des outils MCP à un agent")
+async def update_agent_mcp_tools(
+    profile_id: str, payload: AgentMcpToolsUpdate, database: Db, settings: AppSettings, user: CurrentUser,
+) -> AgentMcpToolsRead:
+    tools = McpService(database, settings).replace_agent_tools(user.id, profile_id, payload.tools)
+    return AgentMcpToolsRead(tools=tools)
 
 
 @router.delete("/agents/{profile_id}", status_code=status.HTTP_204_NO_CONTENT,
@@ -615,8 +701,10 @@ async def get_messages(conversation_id: str, database: Db, user: CurrentUser) ->
     summary="Envoyer un message et recevoir la réponse en SSE",
     description=(
         "Le corps contient `content`. La réponse `text/event-stream` utilise les événements `user`, "
-        "`delta`, `done` et `error`; chaque charge utile est JSON encodé sur une ligne `data:`. "
-        "Les événements d’analyse privée ne sont jamais transmis."
+        "`delta`, `mcp.activity`, `mcp.suggestion`, `plan.ready`, `execution.created`, `done` et `error`; "
+        "chaque charge utile est JSON encodé sur une ligne `data:`. "
+        "`mcp.activity` ne contient que l’identifiant d’appel, le nom du serveur, le nom de l’outil et le statut. "
+        "Les arguments, les résultats et les événements d’analyse privée ne sont jamais transmis."
     ),
     responses={
         200: {
@@ -652,8 +740,22 @@ async def send_message_stream(
         raise HTTPException(status_code=409, detail="Un connecteur sélectionné n’est pas autorisé.") from error
     except McpAuthorizationError as error:
         raise HTTPException(status_code=409, detail="Un serveur MCP sélectionné n’est pas autorisé.") from error
-    if len(payload.content) > settings.max_message_chars:
-        raise HTTPException(status_code=413, detail="Le message dépasse la limite autorisée.")
+    resume = payload.resume_with_tools
+    if resume:
+        previous = next(
+            (
+                message for message in reversed(database.list_messages(conversation_id))
+                if message.role == "user" and message.content.strip()
+            ),
+            None,
+        )
+        if previous is None:
+            raise HTTPException(status_code=422, detail="Aucun message à reprendre.")
+        prompt = previous.content.strip()
+    else:
+        prompt = payload.content.strip()
+        if len(payload.content) > settings.max_message_chars:
+            raise HTTPException(status_code=413, detail="Le message dépasse la limite autorisée.")
     if not settings.openai_configured:
         database.create_message(conversation_id, "user", payload.content.strip())
         raise HTTPException(status_code=503, detail="Le service IA n’est pas configuré sur le backend.")
@@ -664,55 +766,108 @@ async def send_message_stream(
         async with lock:
             if await request.is_disconnected():
                 return
-            user_message = database.create_message(conversation_id, "user", payload.content.strip())
-            yield sse_event("user", user_message.model_dump(mode="json"))
-            try:
-                planning_request = PlanningRequest(
-                    user_id=user.id, conversation_id=conversation_id,
-                    message=payload.content.strip(), enabled_connector_ids=payload.connector_ids,
+            if not resume:
+                user_message = database.create_message(conversation_id, "user", prompt)
+                yield sse_event("user", user_message.model_dump(mode="json"))
+            turn_connector_ids = list(payload.connector_ids)
+            turn_mcp_ids = list(mcp_ids)
+            needed = request.app.state.mcp_catalog.servers_needed(prompt, set())
+            installed = {
+                str(row["catalog_id"]): row for row in database.list_mcp_servers(user.id) if row.get("catalog_id")
+            }
+            ready = [
+                installed[str(entry["id"])] for entry in needed
+                if str(entry["id"]) in installed
+                and installed[str(entry["id"])]["status"] == "ready"
+                and installed[str(entry["id"])]["enabled"]
+                and _mcp_can_run(request.app.state.mcp_runtime, user.id, installed[str(entry["id"])])
+            ]
+            if ready:
+                turn_connector_ids, turn_mcp_ids = _attach_ready_mcp_servers(
+                    database, user.id, conversation_id, turn_connector_ids, ready,
                 )
-                profiles = request.app.state.agent_service.list_profiles(user.id)
-                connector_catalog = [*request.app.state.connector_registry.list()]
-                connector_catalog.extend(mcp_connector_definition(row) for row in database.list_mcp_servers(user.id))
-                decision = await request.app.state.request_router.route(
-                    planning_request, profiles, connector_catalog
-                )
-                if decision.requires_orchestration:
-                    execution = await request.app.state.execution_coordinator.start(user.id, conversation_id, decision)
-                    yield sse_event("plan.ready", {"summary": decision.summary, "tasks": [task.model_dump(mode="json") for task in decision.tasks]})
-                    yield sse_event("execution.created", execution.model_dump(mode="json"))
-                    confirmation = f"J’ai démarré l’orchestration : {decision.summary}"
-                    assistant_message = database.create_message(conversation_id, "assistant", confirmation, execution.id)
-                    yield sse_event("done", {"message": assistant_message.model_dump(mode="json"), "execution": execution.model_dump(mode="json")})
+            usable = [row for row in ready if f"{MCP_CONNECTOR_PREFIX}{row['id']}" in turn_mcp_ids]
+            missing = [entry for entry in needed if not any(str(row.get("catalog_id")) == str(entry["id"]) for row in usable)]
+            if not usable and missing and not resume:
+                yield sse_event("mcp.suggestion", {"suggestions": [
+                    {"id": entry["id"], "name": entry["name"], "category": entry["category"]} for entry in missing
+                ]})
+                yield sse_event("done", {"suggestions_only": True})
+                return
+            answer_with_mcp = bool(usable) or resume or (
+                payload.use_connected_tools and bool(turn_mcp_ids)
+            )
+            if not answer_with_mcp:
+                try:
+                    planning_request = PlanningRequest(
+                        user_id=user.id, conversation_id=conversation_id,
+                        message=prompt, enabled_connector_ids=payload.connector_ids,
+                    )
+                    profiles = request.app.state.agent_service.list_profiles(user.id)
+                    connector_catalog = [*request.app.state.connector_registry.list()]
+                    connector_catalog.extend(
+                        mcp_connector_definition(row) for row in database.list_mcp_servers(user.id)
+                    )
+                    decision = await request.app.state.request_router.route(
+                        planning_request, profiles, connector_catalog
+                    )
+                    if decision.requires_orchestration:
+                        execution = await request.app.state.execution_coordinator.start(
+                            user.id, conversation_id, decision,
+                        )
+                        yield sse_event("plan.ready", {
+                            "summary": decision.summary,
+                            "tasks": [task.model_dump(mode="json") for task in decision.tasks],
+                        })
+                        yield sse_event("execution.created", execution.model_dump(mode="json"))
+                        confirmation = f"J’ai démarré l’orchestration : {decision.summary}"
+                        assistant_message = database.create_message(
+                            conversation_id, "assistant", confirmation, execution.id,
+                        )
+                        yield sse_event("done", {
+                            "message": assistant_message.model_dump(mode="json"),
+                            "execution": execution.model_dump(mode="json"),
+                        })
+                        return
+                except PlanningUnavailable:
+                    yield sse_event("error", {"message": "La demande n’a pas pu être planifiée. Réessayez dans un instant."})
                     return
-            except PlanningUnavailable:
-                yield sse_event("error", {"message": "La demande n’a pas pu être planifiée. Réessayez dans un instant."})
-                return
-            except PlanValidationError:
-                logger.exception("Rejected invalid plan for conversation %s", conversation_id)
-                yield sse_event("error", {"message": "Le plan proposé ne peut pas être exécuté en toute sécurité."})
-                return
-            except Exception:
-                logger.exception("Planning request failed for conversation %s", conversation_id)
-                yield sse_event("error", {"message": "La demande n’a pas pu être planifiée. Réessayez dans un instant."})
-                return
+                except PlanValidationError:
+                    logger.exception("Rejected invalid plan for conversation %s", conversation_id)
+                    yield sse_event("error", {"message": "Le plan proposé ne peut pas être exécuté en toute sécurité."})
+                    return
+                except Exception:
+                    logger.exception("Planning request failed for conversation %s", conversation_id)
+                    yield sse_event("error", {"message": "La demande n’a pas pu être planifiée. Réessayez dans un instant."})
+                    return
             answer_parts: list[str] = []
+            activities: dict[str, McpActivity] = {}
             try:
                 tool_context = ConnectorToolContext(
                     user.id, database, request.app.state.google_oauth, request.app.state.github_oauth
                 ) if available_tools else None
-                async with request.app.state.mcp_runtime.open_approved_servers(user.id, mcp_ids) as mcp_servers:
-                    async for delta in stream_assistant(
-                        conversation_id, payload.content.strip(), settings, available_tools, tool_context, mcp_servers,
+                paid_ids = _paid_mcp_connector_ids(request.app.state.mcp_catalog, database, user.id)
+                free_mcp_ids = [connector_id for connector_id in turn_mcp_ids if connector_id not in paid_ids]
+                async with request.app.state.mcp_runtime.open_approved_servers(
+                    user.id, free_mcp_ids, conversation_id=conversation_id,
+                ) as mcp_servers:
+                    async for chunk in stream_assistant(
+                        conversation_id, prompt, settings, available_tools, tool_context, mcp_servers,
                     ):
                         if await request.is_disconnected():
                             raise asyncio.CancelledError
-                        answer_parts.append(delta)
-                        yield sse_event("delta", {"delta": delta})
+                        if isinstance(chunk, McpActivity):
+                            activities[chunk.call_id] = chunk
+                            yield sse_event("mcp.activity", chunk.payload())
+                            continue
+                        answer_parts.append(chunk)
+                        yield sse_event("delta", {"delta": chunk})
                 answer = "".join(answer_parts).strip()
                 if not answer:
                     raise RuntimeError("Agent completed without user-visible text output")
-                assistant_message = database.create_message(conversation_id, "assistant", answer)
+                assistant_message = database.create_message(
+                    conversation_id, "assistant", answer, mcp_activity=_stored_mcp_activity(activities),
+                )
                 yield sse_event("done", {"message": assistant_message.model_dump(mode="json")})
             except asyncio.CancelledError:
                 logger.info("Client disconnected during assistant stream for conversation %s", conversation_id)
@@ -753,11 +908,12 @@ def mcp_connector_definition(row: dict[str, object]) -> Connector:
         ToolDescriptor(name=tool["name"], description=tool.get("description", ""), access=ToolAccess.READ)
         for tool in tools if tool.get("name") in approved and tool.get("access") == "read"
     )
-    ready = row["status"] == "ready"
-    status = "connected" if ready else "error" if row["status"] == "error" else "disconnected"
+    enabled = bool(row.get("enabled"))
+    ready = row["status"] == "ready" and enabled
+    description = f"Serveur MCP distant · {row['url']}" if enabled else f"Serveur MCP désactivé · {row['url']}"
     return Connector(
         id=f"{MCP_CONNECTOR_PREFIX}{row['id']}", name=str(row["name"]),
-        description=f"Serveur MCP distant · {row['url']}", icon="mcp",
+        description=description, icon="mcp",
         capabilities=tuple(tool.name for tool in approved_tools) or ("Aucun outil approuvé",),
         available_tools=approved_tools,
         required_scopes=tuple(ConnectorPermission(
@@ -771,7 +927,6 @@ def mcp_connector_definition(row: dict[str, object]) -> Connector:
 
 def mcp_connector_read(row: dict[str, object]) -> ConnectorRead:
     connector = mcp_connector_definition(row)
-    approved = {tool.name for tool in connector.available_tools}
     return ConnectorRead(
         id=connector.id, name=connector.name, description=connector.description, icon=connector.icon,
         capabilities=list(connector.capabilities),
@@ -783,7 +938,7 @@ def mcp_connector_read(row: dict[str, object]) -> ConnectorRead:
             "id": scope.id, "label": scope.label, "description": scope.description,
             "access": scope.access.value, "oauth_scope": None,
         } for scope in connector.required_scopes],
-        status="connected" if row["status"] == "ready" else "error" if row["status"] == "error" else "disconnected",
+        status="connected" if row["status"] == "ready" and row.get("enabled") else "error" if row["status"] == "error" else "disconnected",
         availability="available" if connector.availability == "available" else "setup_required",
     )
 
@@ -794,13 +949,64 @@ async def list_connectors(request: Request, database: Db, user: CurrentUser) -> 
         connector_read(connector, database, user.id, request.app.state.tool_registry)
         for connector in request.app.state.connector_registry.list()
     ]
-    catalog.extend(mcp_connector_read(row) for row in database.list_mcp_servers(user.id))
+    catalog.extend(
+        mcp_connector_read(row) for row in database.list_mcp_servers(user.id)
+        if _mcp_row_is_listed(request.app.state.mcp_catalog, row)
+    )
     return catalog
 
 
 @router.get("/connectors/mcp", response_model=list[McpServerRead], summary="Lister les serveurs MCP de l’utilisateur")
-async def list_mcp_servers(database: Db, settings: AppSettings, user: CurrentUser) -> list[McpServerRead]:
-    return McpService(database, settings).list_servers(user.id)
+async def list_mcp_servers(request: Request, database: Db, settings: AppSettings, user: CurrentUser) -> list[McpServerRead]:
+    return [
+        server for server in McpService(database, settings).list_servers(user.id)
+        if _mcp_row_is_listed(
+            request.app.state.mcp_catalog, {"catalog_id": server.catalog_id, "url": server.url},
+        )
+    ]
+
+
+@router.get("/connectors/mcp/catalog", response_model=McpCatalogPage, summary="Rechercher le catalogue MCP local")
+async def search_mcp_catalog(
+    request: Request,
+    user: CurrentUser,
+    q: str = "",
+    category: str = "",
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=24, ge=1, le=48),
+) -> McpCatalogPage:
+    del user
+    items, total = request.app.state.mcp_catalog.search(q, category, page, page_size)
+    return McpCatalogPage(
+        items=[McpCatalogEntry.model_validate(item) for item in items],
+        page=page, page_size=page_size, total=total,
+        categories=request.app.state.mcp_catalog.categories(),
+    )
+
+
+@router.post(
+    "/connectors/mcp/catalog/refresh", response_model=McpCatalogRefresh,
+    dependencies=[Depends(rate_limit), TrustedOrigin], summary="Ajouter les nouvelles fiches MCP distantes publiées",
+)
+async def refresh_mcp_catalog(request: Request, user: CurrentUser) -> McpCatalogRefresh:
+    del user
+    result = await asyncio.to_thread(refresh_catalog, request.app.state.mcp_catalog.path)
+    return McpCatalogRefresh.model_validate(result)
+
+
+@router.get("/connectors/mcp/catalog/{catalog_id:path}", response_model=McpCatalogEntry, summary="Lire une fiche du catalogue MCP")
+async def get_mcp_catalog_entry(catalog_id: str, request: Request, user: CurrentUser) -> McpCatalogEntry:
+    del user
+    entry = request.app.state.mcp_catalog.get(catalog_id)
+    if entry is None or not is_free_server(entry):
+        raise HTTPException(status_code=404, detail="Cette fiche du catalogue est introuvable.")
+    return McpCatalogEntry.model_validate(entry)
+
+
+@router.post("/connectors/mcp/suggestions", response_model=McpSuggestions, summary="Suggérer des fiches MCP pour un message")
+async def suggest_mcp_servers(payload: McpSuggestionQuery, request: Request, database: Db, user: CurrentUser) -> McpSuggestions:
+    installed = {str(row["catalog_id"]) for row in database.list_mcp_servers(user.id) if row.get("catalog_id")}
+    return McpSuggestions(suggestions=request.app.state.mcp_catalog.suggest(payload.content, installed))
 
 
 @router.post("/connectors/mcp/{server_id}/refresh", response_model=McpServerRead,
@@ -818,12 +1024,46 @@ async def refresh_mcp_server(server_id: str, request: Request, user: CurrentUser
 
 @router.post("/connectors/mcp", response_model=McpServerRead, status_code=201,
              dependencies=[Depends(rate_limit), TrustedOrigin], summary="Ajouter un serveur MCP distant")
-async def create_mcp_server(payload: McpServerCreate, database: Db, settings: AppSettings, user: CurrentUser) -> McpServerRead:
+async def create_mcp_server(payload: McpServerCreate, request: Request, database: Db, settings: AppSettings, user: CurrentUser) -> McpServerRead:
+    if payload.catalog_id:
+        entry = request.app.state.mcp_catalog.get(payload.catalog_id)
+        if entry is None or not entry.get("endpoint") or not is_free_server(entry):
+            raise HTTPException(status_code=404, detail="Cette fiche du catalogue est introuvable.")
+        requires_token = bool(entry["requires_token"])
+        if requires_token and not payload.auth_token:
+            raise HTTPException(status_code=422, detail="Ce serveur MCP demande un jeton utilisateur.")
+        payload = payload.model_copy(update={
+            "name": str(entry["name"])[:80],
+            "url": str(entry["endpoint"]),
+            "auth_token": payload.auth_token if requires_token else None,
+        })
+    if request.app.state.mcp_catalog.charges_for_endpoint(payload.url):
+        raise HTTPException(status_code=422, detail="Ce serveur MCP n’est pas gratuit.")
     try:
-        await asyncio.to_thread(validate_public_endpoint, payload.url)
+        await asyncio.to_thread(
+            validate_public_endpoint, payload.url, resolve=True, allow_loopback=settings.mcp_allow_loopback,
+        )
     except ValueError as error:
         raise HTTPException(status_code=422, detail="Le serveur MCP doit utiliser une URL publique accessible.") from error
     return McpService(database, settings).create_server(user.id, payload)
+
+
+@router.put("/connectors/mcp/{server_id}/credential", response_model=McpServerRead,
+            dependencies=[Depends(rate_limit), TrustedOrigin], summary="Enregistrer le jeton d’un serveur MCP")
+async def replace_mcp_credential(
+    server_id: str, payload: McpCredentialUpdate, database: Db, settings: AppSettings, user: CurrentUser,
+) -> McpServerRead:
+    service = McpService(database, settings)
+    service.store_auth_token(user.id, server_id, payload.auth_token)
+    return service._read(service.get_server(user.id, server_id))
+
+
+@router.patch("/connectors/mcp/{server_id}", response_model=McpServerRead,
+             dependencies=[Depends(rate_limit), TrustedOrigin], summary="Activer ou désactiver un serveur MCP")
+async def set_mcp_server_enabled(
+    server_id: str, payload: McpServerEnabledUpdate, database: Db, settings: AppSettings, user: CurrentUser,
+) -> McpServerRead:
+    return McpService(database, settings).set_enabled(user.id, server_id, payload.enabled)
 
 
 @router.put("/connectors/mcp/{server_id}/tools", response_model=McpServerRead,
@@ -940,7 +1180,12 @@ async def get_conversation_connectors(
 ) -> ConnectorPreferencesRead:
     if database.get_conversation(conversation_id, user.id) is None:
         raise HTTPException(status_code=404, detail="Conversation introuvable.")
-    connector_ids = database.get_conversation_connector_ids(user.id, conversation_id)
+    stored_ids = database.get_conversation_connector_ids(user.id, conversation_id)
+    connector_ids = _without_paid_mcp_connectors(
+        request.app.state.mcp_catalog, database, user.id, stored_ids,
+    )
+    if connector_ids != stored_ids:
+        database.set_conversation_connector_ids(user.id, conversation_id, connector_ids)
     connectors = []
     for connector_id in connector_ids:
         if connector_id.startswith(MCP_CONNECTOR_PREFIX):
@@ -979,6 +1224,9 @@ async def set_conversation_connectors(
         raise HTTPException(status_code=404, detail="Conversation introuvable.")
     for connector_id in payload.connector_ids:
         if connector_id.startswith(MCP_CONNECTOR_PREFIX):
+            row = database.get_mcp_server(user.id, connector_id.removeprefix(MCP_CONNECTOR_PREFIX))
+            if row is None or not _mcp_row_is_listed(request.app.state.mcp_catalog, row):
+                raise HTTPException(status_code=409, detail="Ce serveur MCP n’est pas disponible ou aucun outil de lecture n’est approuvé.")
             try:
                 request.app.state.mcp_runtime.validate_selection(user.id, [connector_id])
             except McpAuthorizationError as error:
@@ -1006,7 +1254,56 @@ async def set_conversation_connectors(
     )
 
 
+@router.post(
+    "/conversations/{conversation_id}/mcp",
+    response_model=McpConversationActivationRead,
+    summary="Activer un serveur MCP suggéré pour cette conversation",
+    responses={
+        404: {"description": "Conversation ou fiche inconnue."},
+        409: {"description": "La conversation a déjà le nombre maximal de connecteurs."},
+        422: {"description": "Jeton manquant ou aucun outil utilisable."},
+        502: {"description": "Le serveur MCP n’a pas pu être inspecté."},
+    },
+    dependencies=[Depends(rate_limit), TrustedOrigin],
+)
+async def activate_conversation_mcp(
+    conversation_id: str,
+    payload: McpConversationActivation,
+    request: Request,
+    database: Db,
+    user: CurrentUser,
+) -> McpConversationActivationRead:
+    if database.get_conversation(conversation_id, user.id) is None:
+        raise HTTPException(status_code=404, detail="Conversation introuvable.")
+    entry = request.app.state.mcp_catalog.get(payload.catalog_id)
+    if entry is None or not entry.get("endpoint") or not is_free_server(entry):
+        raise HTTPException(status_code=404, detail="Cette fiche du catalogue est introuvable.")
+    try:
+        server, connector_ids = await request.app.state.mcp_runtime.activate_catalog_for_conversation(
+            user.id,
+            conversation_id,
+            catalog_id=payload.catalog_id,
+            name=str(entry["name"]),
+            endpoint=str(entry["endpoint"]),
+            requires_token=bool(entry["requires_token"]),
+            auth_token=payload.auth_token,
+        )
+    except ConversationMcpError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=refusal_detail(error.detail, connect_url=error.connect_url, needs_token=error.needs_token),
+        ) from error
+    except TimeoutError as error:
+        raise HTTPException(status_code=504, detail="Le serveur MCP n’a pas répondu à temps.") from error
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=502, detail="Impossible d’inspecter ce serveur MCP.") from error
+    return McpConversationActivationRead(server=server, connector_ids=connector_ids)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
+    install_mcp_assistant_instructions()
     app_settings = settings or Settings()
     database = Database(app_settings.database_path)
     configure_openai(app_settings)
@@ -1044,6 +1341,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.connector_registry = connector_registry
     application.state.tool_registry = ToolRegistry(connector_registry)
+    install_secret_log_filter()
+    application.state.mcp_catalog = McpCatalog(app_settings.mcp_catalog_path)
     application.state.mcp_runtime = McpRuntime(database, app_settings)
     application.state.google_oauth = google_oauth
     application.state.github_oauth = github_oauth

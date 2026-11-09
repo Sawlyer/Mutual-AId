@@ -71,7 +71,11 @@ class AgentTaskExecutor:
             "Return the requested user-facing result. Report only information returned by authorized tools."
         )
         if self.mcp_runtime:
-            async with self.mcp_runtime.open_approved_servers(self.user_id, mcp_ids) as mcp_servers:
+            execution_record = self.repository.get(self.user_id, self.execution_id)
+            conversation_id = execution_record.conversation_id if execution_record else ""
+            async with self.mcp_runtime.open_approved_servers(
+                self.user_id, mcp_ids, conversation_id=conversation_id, agent_profile_id=task.agent_profile_id,
+            ) as mcp_servers:
                 agent = Agent(
                     name=str(snapshot.get("name") or "Assistant"), instructions=instructions,
                     model=self.settings.openai_model.strip(), tools=tools, mcp_servers=mcp_servers,

@@ -40,4 +40,6 @@ export const agentService = {
   createSkill: (input: AgentSkillInput) => request<AgentSkill>('/agent-skills', { method: 'POST', body: JSON.stringify(input) }),
   updateSkill: (id: string, input: AgentSkillUpdate) => request<AgentSkill>(`/agent-skills/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),
   deleteSkill: (id: string) => request<void>(`/agent-skills/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  listMcpTools: (profileId: string) => request<{ tools: { server_id: string; tool_name: string }[] }>(`/agents/${encodeURIComponent(profileId)}/mcp-tools`),
+  setMcpTools: (profileId: string, tools: { server_id: string; tool_name: string }[]) => request<{ tools: { server_id: string; tool_name: string }[] }>(`/agents/${encodeURIComponent(profileId)}/mcp-tools`, { method: 'PUT', body: JSON.stringify({ tools }) }),
 }
