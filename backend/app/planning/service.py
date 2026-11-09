@@ -14,7 +14,8 @@ PLANNER_INSTRUCTIONS = """You are Mutual-AId's task planner. Decide whether the 
 Return a concise user-facing summary and, only for complex work, a small task DAG with stable IDs, dependency IDs,
 capability IDs, and connector IDs. Use only capability IDs and connector IDs listed in the input. Never invent
 profiles, tools, OAuth scopes, connector access, or completed actions. You have no tools and must not attempt
-external actions. Use approval_required for any proposed external write. For simple requests set
+external actions. Use approval_required for any proposed external write. For simple requests, and for any
+request that cannot be expressed with the allowed capability IDs and connector IDs, set
 requires_orchestration=false and return no tasks. Ask a concise clarification when the goal is materially ambiguous.
 For wellness topics, organize general habits only: no diagnosis or treatment recommendations. Never include hidden
 reasoning; return only the structured plan fields."""
@@ -85,6 +86,9 @@ class Planner:
             return decision
         except PlanningUnavailable:
             raise
+        except PlanValidationError as error:
+            logger.info("Planning skipped for conversation %s (%s)", request.conversation_id, error)
+            return PlanningDecision(summary="Réponse directe", tasks=[], requires_orchestration=False)
         except Exception as error:
             logger.warning("Planning failed for conversation %s (%s)", request.conversation_id, type(error).__name__)
             raise PlanningUnavailable("Planning could not be completed") from error

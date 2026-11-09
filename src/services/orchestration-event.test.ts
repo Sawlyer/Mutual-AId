@@ -8,6 +8,13 @@ describe('parseOrchestrationEvent', () => {
     if (event?.type === 'execution.created') expect(event.execution.id).toBe('exec-1')
   })
 
+  it('parses a catalog suggestion without keeping a remote URL', () => {
+    expect(parseOrchestrationEvent('event: mcp.suggestion\ndata: {"suggestions":[{"id":"docs","name":"Docs","category":"Recherche","source_url":"https://secret.example/mcp"}]}')).toEqual({
+      type: 'mcp.suggestion',
+      suggestions: [{ id: 'docs', name: 'Docs', category: 'Recherche' }],
+    })
+  })
+
   it('keeps text deltas and ignores unknown or malformed events', () => {
     expect(parseOrchestrationEvent('event: delta\ndata: {"delta":"Bonjour"}')).toEqual({ type: 'delta', delta: 'Bonjour' })
     expect(parseOrchestrationEvent('event: future.event\ndata: {}')).toBeNull()

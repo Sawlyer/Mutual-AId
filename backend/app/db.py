@@ -108,6 +108,8 @@ class Database:
                     url TEXT NOT NULL,
                     encrypted_auth_token TEXT,
                     status TEXT NOT NULL DEFAULT 'not_checked' CHECK (status IN ('not_checked', 'ready', 'error')),
+                    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+                    catalog_id TEXT,
                     discovered_tools_json TEXT NOT NULL DEFAULT '[]',
                     approved_tools_json TEXT NOT NULL DEFAULT '[]',
                     last_checked_at TEXT,
@@ -116,6 +118,13 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS mcp_servers_user_created ON mcp_servers(user_id, created_at);
+                CREATE TABLE IF NOT EXISTS agent_profile_mcp_tools (
+                    user_id TEXT NOT NULL,
+                    profile_id TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    PRIMARY KEY (user_id, profile_id, server_id, tool_name)
+                );
                 CREATE TABLE IF NOT EXISTS agent_profiles (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -284,6 +293,20 @@ class Database:
             oauth_state_columns = {row["name"] for row in connection.execute("PRAGMA table_info(connector_oauth_states)")}
             if "connector_id" not in oauth_state_columns:
                 connection.execute("ALTER TABLE connector_oauth_states ADD COLUMN connector_id TEXT NOT NULL DEFAULT 'google_calendar'")
+            mcp_columns = {row["name"] for row in connection.execute("PRAGMA table_info(mcp_servers)")}
+            if "enabled" not in mcp_columns:
+                connection.execute("ALTER TABLE mcp_servers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0")
+            if "catalog_id" not in mcp_columns:
+                connection.execute("ALTER TABLE mcp_servers ADD COLUMN catalog_id TEXT")
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS agent_profile_mcp_tools (
+                    user_id TEXT NOT NULL,
+                    profile_id TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    PRIMARY KEY (user_id, profile_id, server_id, tool_name)
+                )"""
+            )
 
     @staticmethod
     def _agent_profile(row: sqlite3.Row | None) -> dict[str, object] | None:
@@ -347,6 +370,10 @@ class Database:
 
     def delete_agent_profile(self, user_id: str, profile_id: str) -> bool:
         with self.connection() as connection:
+            connection.execute(
+                "DELETE FROM agent_profile_mcp_tools WHERE user_id = ? AND profile_id = ?",
+                (user_id, profile_id),
+            )
             cursor = connection.execute("DELETE FROM agent_profiles WHERE user_id = ? AND id = ?", (user_id, profile_id))
         return cursor.rowcount > 0
 
@@ -624,11 +651,13 @@ class Database:
         with self.connection() as connection:
             connection.execute("DELETE FROM connector_credentials WHERE user_id = ? AND connector_id = ?", (user_id, connector_id))
 
-    def create_mcp_server(self, server_id: str, user_id: str, name: str, url: str, encrypted_auth_token: str | None) -> None:
+    def create_mcp_server(self, server_id: str, user_id: str, name: str, url: str, encrypted_auth_token: str | None, catalog_id: str | None = None) -> None:
         with self.connection() as connection:
             connection.execute(
-                "INSERT INTO mcp_servers (id, user_id, name, url, encrypted_auth_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (server_id, user_id, name, url, encrypted_auth_token, utc_now(), utc_now()),
+                """INSERT INTO mcp_servers
+                   (id, user_id, name, url, encrypted_auth_token, enabled, catalog_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+                (server_id, user_id, name, url, encrypted_auth_token, catalog_id, utc_now(), utc_now()),
             )
 
     def list_mcp_servers(self, user_id: str) -> list[dict[str, object]]:
@@ -640,6 +669,14 @@ class Database:
         with self.connection() as connection:
             row = connection.execute("SELECT * FROM mcp_servers WHERE user_id = ? AND id = ?", (user_id, server_id)).fetchone()
         return dict(row) if row else None
+
+    def set_mcp_server_auth_token(self, user_id: str, server_id: str, encrypted_auth_token: str) -> bool:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "UPDATE mcp_servers SET encrypted_auth_token = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (encrypted_auth_token, utc_now(), user_id, server_id),
+            )
+        return cursor.rowcount == 1
 
     def update_mcp_server_tools(self, user_id: str, server_id: str, tools: list[dict[str, object]], status: str = "ready", error: str | None = None) -> bool:
         with self.connection() as connection:
@@ -664,11 +701,53 @@ class Database:
             )
         return cursor.rowcount == 1
 
+    def set_mcp_server_enabled(self, user_id: str, server_id: str, enabled: bool) -> bool:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "UPDATE mcp_servers SET enabled = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (int(enabled), utc_now(), user_id, server_id),
+            )
+        return cursor.rowcount == 1
+
+    def list_agent_mcp_tools(self, user_id: str, profile_id: str) -> list[dict[str, str]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """SELECT server_id, tool_name FROM agent_profile_mcp_tools
+                   WHERE user_id = ? AND profile_id = ? ORDER BY server_id, tool_name""",
+                (user_id, profile_id),
+            ).fetchall()
+        return [{"server_id": row["server_id"], "tool_name": row["tool_name"]} for row in rows]
+
+    def replace_agent_mcp_tools(self, user_id: str, profile_id: str, tools: list[tuple[str, str]]) -> None:
+        unique = sorted(set(tools))
+        with self.connection() as connection:
+            connection.execute(
+                "DELETE FROM agent_profile_mcp_tools WHERE user_id = ? AND profile_id = ?",
+                (user_id, profile_id),
+            )
+            connection.executemany(
+                "INSERT INTO agent_profile_mcp_tools (user_id, profile_id, server_id, tool_name) VALUES (?, ?, ?, ?)",
+                [(user_id, profile_id, server_id, tool_name) for server_id, tool_name in unique],
+            )
+
+    def agent_has_mcp_tool(self, user_id: str, profile_id: str, server_id: str, tool_name: str) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(
+                """SELECT 1 FROM agent_profile_mcp_tools
+                   WHERE user_id = ? AND profile_id = ? AND server_id = ? AND tool_name = ?""",
+                (user_id, profile_id, server_id, tool_name),
+            ).fetchone()
+        return row is not None
+
     def delete_mcp_server(self, user_id: str, server_id: str) -> bool:
         with self.connection() as connection:
             connection.execute(
                 "DELETE FROM conversation_connectors WHERE user_id = ? AND connector_id = ?",
                 (user_id, f"mcp:{server_id}"),
+            )
+            connection.execute(
+                "DELETE FROM agent_profile_mcp_tools WHERE user_id = ? AND server_id = ?",
+                (user_id, server_id),
             )
             cursor = connection.execute("DELETE FROM mcp_servers WHERE user_id = ? AND id = ?", (user_id, server_id))
         return cursor.rowcount == 1

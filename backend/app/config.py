@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     github_app_client_secret: SecretStr | None = None
     github_app_redirect_uri: str | None = None
     connector_token_encryption_key: SecretStr | None = None
+    mcp_catalog_path: Path = BACKEND_DIR / "app" / "connectors" / "data" / "mcp_catalog.sqlite3"
+    mcp_allow_loopback: bool = False
 
     @property
     def openai_configured(self) -> bool:

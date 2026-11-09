@@ -85,20 +85,34 @@ Le mode utilisé par défaut est `openai`. Pour revenir au mode de démonstratio
 - `GET /api/conversations/{id}/messages` : récupérer son historique
 - `POST /api/conversations/{id}/messages/stream` : envoyer `{ "content": "…" }` et recevoir `text/event-stream`
 
-Le flux SSE émet `user`, `delta`, `done` et `error`. Seuls les deltas de texte destinés à l’utilisateur sont transmis ; le raisonnement privé et les erreurs détaillées restent côté serveur.
+Le flux SSE émet `user`, `delta`, `mcp.suggestion`, `plan.ready`, `execution.created`, `done` et `error`. Seuls les deltas de texte destinés à l’utilisateur sont transmis ; le raisonnement privé et les erreurs détaillées restent côté serveur. Une suggestion MCP ne contient que l’identifiant de fiche, le nom et la catégorie.
 
 Toutes les routes de conversation et de connecteur nécessitent une session. Les routes historiques `/dashboard`, `/missions/*` et `/executions/*` redirigent vers le chat : elles ne créent plus de données de démonstration qui ressemblent à de vraies exécutions.
 
 ## Connecteurs
 
-La page Connecteurs affiche Gmail, Google Drive, Google Calendar, GitHub et Custom MCP Server. Gmail, Drive et Calendar utilisent le client OAuth Google commun ; GitHub utilise une OAuth App. Chaque service reste `setup_required` tant que ses paramètres serveur ne sont pas présents et passe en lecture seule après configuration. Custom MCP reste indisponible jusqu’à l’ajout et l’approbation d’un serveur dans l’interface dédiée.
+La page Connecteurs affiche Gmail, Google Drive, Google Calendar et GitHub, puis un lien vers le catalogue MCP. Gmail, Drive et Calendar utilisent le client OAuth Google commun ; GitHub utilise une OAuth App. Chaque service reste `setup_required` tant que ses paramètres serveur ne sont pas présents et passe en lecture seule après configuration.
 
 - `GET /api/connectors` renvoie le catalogue, les permissions et les outils réellement accessibles à l’utilisateur courant.
 - `GET /api/conversations/{id}/connectors` lit les connecteurs sélectionnés pour la conversation.
 - `PUT /api/conversations/{id}/connectors` enregistre une sélection. Le backend rejette un connecteur déconnecté ou indisponible avec `409`.
 - Le corps de `POST /api/conversations/{id}/messages/stream` accepte `connector_ids`. Le backend compare cette liste aux préférences enregistrées, puis ne fournit au SDK Agents que les outils autorisés et dotés des scopes accordés. Les outils d’écriture sans permission explicite, et ceux qui attendent une validation humaine, ne sont pas donnés à l’agent.
 
-Les serveurs MCP personnalisés se gèrent dans la page Connecteurs. Seuls les endpoints publics HTTP(S) Streamable HTTP sont acceptés; les adresses locales/privées et les redirections vers une autre origine sont rejetées. Un jeton Bearer facultatif est chiffré avec `CONNECTOR_TOKEN_ENCRYPTION_KEY` et n’est jamais retourné au frontend. L’utilisateur doit tester le serveur puis autoriser chaque outil de lecture. Les outils annoncés comme écriture, destructifs ou sans annotation de lecture restent bloqués. L’API fournit `GET/POST /api/connectors/mcp`, `POST /api/connectors/mcp/{id}/refresh`, `PUT /api/connectors/mcp/{id}/tools` et `DELETE /api/connectors/mcp/{id}`. La sélection `mcp:{id}` est stockée avec les préférences de conversation et revalidée avant chaque exécution.
+Le catalogue MCP est une page dédiée, `/connectors/mcp`. Elle ne liste que les fiches dont la page du répertoire publie une adresse distante dans le bloc « Serveur MCP hébergé ». L’instantané local conserve le nom, la description, la catégorie, l’URL de fiche, les badges, cette adresse et l’indication qu’un jeton utilisateur est obligatoire. Les commandes d’installation et les URL citées seulement dans le texte ne sont pas utilisées. La recherche et les suggestions restent sur la machine ; le texte d’un prompt n’est pas envoyé au répertoire.
+
+Pour rafraîchir l’instantané, depuis `backend/` :
+
+```bash
+uv run python scripts/import_mcp_catalog.py
+```
+
+Si le répertoire répond par un contrôle anti-robot, enregistrez les fiches déjà analysées dans un fichier JSON et lancez `uv run python scripts/import_mcp_catalog.py --from-json fiches.json`. Le résultat est `backend/app/connectors/data/mcp_catalog.sqlite3`.
+
+Le bouton Mettre à jour relit `https://mcpservers.org/fr/all` et ajoute les nouvelles fiches de ce type. Si le répertoire ne répond pas, la liste déjà enregistrée est conservée. L’activation affiche l’adresse publiée : c’est celle que le backend appellera. Le jeton n’est demandé que lorsque la fiche l’exige. Il est chiffré et n’est jamais réaffiché. Le serveur est créé désactivé, puis testé. Seuls les outils de lecture approuvés peuvent être activés. Les outils d’écriture ou non annotés restent visibles, marqués comme nécessitant une approbation, et ne sont pas exécutables. Un serveur peut être désactivé sans être supprimé. La sélection `mcp:{id}` reste obligatoire dans la conversation. Un profil d’agent n’appelle un outil que s’il lui est aussi affecté. Le backend revérifie ces conditions immédiatement avant chaque appel. Les redirections HTTP sont refusées. Les journaux et l’interface ne conservent pas les jetons.
+
+Les transports acceptés sont HTTP et HTTPS publics, en mode normal comme dans Docker. Aucune commande stdio n’est acceptée, et Compose ne lance pas de processus MCP. L’exemple `backend/examples/readonly_mcp/server.py` est réservé au développement : il n’écoute que sur `127.0.0.1:8765`, expose uniquement l’outil `health`, et n’est joignable que si `MCP_ALLOW_LOOPBACK=true`. Cette variable reste fausse par défaut et n’est pas définie dans Compose. Les adresses privées, le lien local et les métadonnées cloud restent refusées.
+
+L’API fournit `GET /api/connectors/mcp/catalog`, `POST /api/connectors/mcp/catalog/refresh`, `POST /api/connectors/mcp/suggestions`, `GET/POST /api/connectors/mcp`, `POST /api/connectors/mcp/{id}/refresh`, `PATCH /api/connectors/mcp/{id}`, `PUT /api/connectors/mcp/{id}/tools`, `DELETE /api/connectors/mcp/{id}` et `GET/PUT /api/agents/{id}/mcp-tools`. Un jeton exigé par la fiche est chiffré avec `CONNECTOR_TOKEN_ENCRYPTION_KEY` et n’est jamais retourné au frontend.
 
 Le backend stocke les états OAuth à usage unique et les jetons Google chiffrés avec `CONNECTOR_TOKEN_ENCRYPTION_KEY`, séparément par compte. L’outil Calendar revérifie connexion, sélection de conversation et scope à chaque appel, puis ne renvoie que titre, début, fin et statut d’événement. Aucun outil d’écriture Calendar n’est activé. Les comptes disposent d’une inscription, connexion, déconnexion et session persistante en cookie HttpOnly. Les mots de passe sont hachés avec Argon2. Configurez `AUTH_COOKIE_SECURE=true` lorsque l’application est servie en HTTPS.
 

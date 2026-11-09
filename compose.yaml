@@ -12,6 +12,7 @@ services:
         required: false
     environment:
       DATABASE_PATH: /app/backend/data/mutual_aid.sqlite3
+      # MCP_ALLOW_LOOPBACK stays unset so a container cannot call a loopback MCP server.
     ports:
       - "127.0.0.1:8000:8000"
     volumes:

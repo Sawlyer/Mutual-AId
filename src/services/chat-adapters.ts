@@ -19,10 +19,17 @@ export interface BackendMessage {
   execution_id?: string | null
 }
 
+export interface McpSuggestion {
+  id: string
+  name: string
+  category: string
+}
+
 export type OrchestrationEvent =
   | { type: 'delta'; delta: string }
+  | { type: 'mcp.suggestion'; suggestions: McpSuggestion[] }
   | { type: 'execution.created'; execution: Execution }
-  | { type: 'done'; message: BackendMessage }
+  | { type: 'done'; message: BackendMessage | null }
   | { type: 'error'; message: string }
 
 export function parseOrchestrationEvent(frame: string): OrchestrationEvent | null {
@@ -37,7 +44,17 @@ export function parseOrchestrationEvent(frame: string): OrchestrationEvent | nul
   try { payload = JSON.parse(data.join('\n')) as Record<string, unknown> }
   catch { return null }
   if (event === 'delta' && typeof payload.delta === 'string') return { type: 'delta', delta: payload.delta }
+  if (event === 'mcp.suggestion' && Array.isArray(payload.suggestions)) {
+    const suggestions = payload.suggestions.flatMap((item) => {
+      if (!item || typeof item !== 'object') return []
+      const suggestion = item as Record<string, unknown>
+      if (typeof suggestion.id !== 'string' || typeof suggestion.name !== 'string' || typeof suggestion.category !== 'string') return []
+      return [{ id: suggestion.id, name: suggestion.name, category: suggestion.category }]
+    })
+    return { type: 'mcp.suggestion', suggestions }
+  }
   if (event === 'execution.created' && typeof payload.id === 'string' && Array.isArray(payload.tasks)) return { type: 'execution.created', execution: payload as unknown as Execution }
+  if (event === 'done' && payload.suggestions_only === true) return { type: 'done', message: null }
   if (event === 'done' && payload.message && typeof payload.message === 'object') return { type: 'done', message: payload.message as BackendMessage }
   if (event === 'error' && typeof payload.message === 'string') return { type: 'error', message: payload.message }
   return null
@@ -94,6 +111,8 @@ export interface McpServerRecord {
   name: string
   url: string
   status: 'not_checked' | 'ready' | 'error'
+  enabled: boolean
+  catalog_id: string | null
   tools: McpToolInfo[]
   approved_tool_names: string[]
   last_checked_at: string | null
@@ -104,6 +123,37 @@ export interface McpServerCreate {
   name: string
   url: string
   auth_token?: string
+  catalog_id?: string
+}
+
+export interface McpConversationActivation {
+  server: McpServerRecord
+  connector_ids: string[]
+}
+
+export interface McpCatalogEntry {
+  id: string
+  name: string
+  description: string
+  category: string
+  source_url: string
+  badges: string[]
+  endpoint: string
+  requires_token: boolean
+}
+
+export interface McpCatalogRefresh {
+  added: number
+  directory_available: boolean
+  message: string
+}
+
+export interface McpCatalogPage {
+  items: McpCatalogEntry[]
+  page: number
+  page_size: number
+  total: number
+  categories: string[]
 }
 
 export interface ConversationConnectorPreferences {
@@ -121,9 +171,14 @@ export interface ChatAdapter {
   listMessages(conversationId: string): Promise<Message[]>
   listConnectors(): Promise<ConnectorCatalogItem[]>
   listMcpServers(): Promise<McpServerRecord[]>
+  searchMcpCatalog(query: string, category: string, page: number): Promise<McpCatalogPage>
+  refreshMcpCatalog(): Promise<McpCatalogRefresh>
+  getMcpCatalogEntry(catalogId: string): Promise<McpCatalogEntry>
   createMcpServer(payload: McpServerCreate): Promise<McpServerRecord>
   refreshMcpServer(serverId: string): Promise<McpServerRecord>
+  replaceMcpCredential(serverId: string, authToken: string): Promise<McpServerRecord>
   setMcpServerTools(serverId: string, toolNames: string[]): Promise<McpServerRecord>
+  setMcpServerEnabled(serverId: string, enabled: boolean): Promise<McpServerRecord>
   deleteMcpServer(serverId: string): Promise<void>
   connectConnector(connectorId: string): Promise<string>
   disconnectConnector(connectorId: string): Promise<void>
@@ -131,7 +186,8 @@ export interface ChatAdapter {
   disconnectGoogleCalendar(): Promise<void>
   getConversationConnectors(conversationId: string): Promise<ConversationConnectorPreferences>
   setConversationConnectors(conversationId: string, connectorIds: string[]): Promise<ConversationConnectorPreferences>
-  streamMessage(conversationId: string, content: string, signal: AbortSignal, connectorIds: string[], onDelta: (delta: string) => void, onExecution?: (execution: Execution) => void): Promise<Message>
+  activateConversationMcp(conversationId: string, catalogId: string, authToken?: string): Promise<McpConversationActivation>
+  streamMessage(conversationId: string, content: string, signal: AbortSignal, connectorIds: string[], onDelta: (delta: string) => void, onExecution?: (execution: Execution) => void, onSuggestion?: (suggestions: McpSuggestion[]) => void, useConnectedTools?: boolean, resumeWithTools?: boolean): Promise<Message | null>
   checkHealth(): Promise<ChatBackendHealth>
 }
 
@@ -153,8 +209,51 @@ function asMessage(message: BackendMessage): Message {
   return { id: message.id, conversationId: message.conversation_id, role: message.role, content: message.content, createdAt: message.created_at, status: 'complete', simulated: false, executionId: message.execution_id ?? undefined }
 }
 
-class ChatServiceError extends Error {
-  constructor(message: string) { super(message); this.name = 'ChatServiceError' }
+export class ChatServiceError extends Error {
+  readonly connectUrl?: string
+  readonly needsToken?: boolean
+  constructor(message: string, options?: { connectUrl?: string; needsToken?: boolean }) {
+    super(message)
+    this.name = 'ChatServiceError'
+    this.connectUrl = options?.connectUrl
+    this.needsToken = options?.needsToken
+  }
+}
+
+function publicConnectUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 300) return undefined
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return undefined
+    return value
+  } catch { return undefined }
+}
+
+function safeDetailMessage(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 240) return ''
+  if (/bearer|authorization|auth_token|secret|token/i.test(value)) return ''
+  return value
+}
+
+async function errorFromResponse(response: Response): Promise<ChatServiceError> {
+  try {
+    const body = await response.json() as { detail?: unknown }
+    const detail = body.detail
+    if (typeof detail === 'string') {
+      const message = safeDetailMessage(detail)
+      if (message) return new ChatServiceError(message)
+    } else if (detail && typeof detail === 'object') {
+      const record = detail as { message?: unknown; connect_url?: unknown; needs_token?: unknown }
+      const message = safeDetailMessage(record.message)
+      if (message) {
+        return new ChatServiceError(message, {
+          connectUrl: publicConnectUrl(record.connect_url),
+          needsToken: record.needs_token === true,
+        })
+      }
+    }
+  } catch { /* Keep the generic status message when the body is not JSON. */ }
+  return responseError(response.status)
 }
 
 function responseError(status: number): ChatServiceError {
@@ -181,9 +280,14 @@ class DemoAdapter implements ChatAdapter {
   async listMessages(conversationId: string) { return useConversationsStore.getState().messages.filter((message) => message.conversationId === conversationId) }
   async listConnectors() { return demoConnectors }
   async listMcpServers() { return [] }
+  async searchMcpCatalog(): Promise<McpCatalogPage> { return { items: [], page: 1, page_size: 24, total: 0, categories: [] } }
+  async refreshMcpCatalog(): Promise<McpCatalogRefresh> { throw new ChatServiceError('Le catalogue MCP n’est pas disponible en mode démo.') }
+  async getMcpCatalogEntry(): Promise<McpCatalogEntry> { throw new ChatServiceError('Le catalogue MCP n’est pas disponible en mode démo.') }
   async createMcpServer(): Promise<McpServerRecord> { throw new ChatServiceError('La gestion des serveurs MCP n’est pas disponible en mode démo.') }
   async refreshMcpServer(): Promise<McpServerRecord> { throw new ChatServiceError('La gestion des serveurs MCP n’est pas disponible en mode démo.') }
+  async replaceMcpCredential(): Promise<McpServerRecord> { throw new ChatServiceError('La gestion des serveurs MCP n’est pas disponible en mode démo.') }
   async setMcpServerTools(): Promise<McpServerRecord> { throw new ChatServiceError('La gestion des serveurs MCP n’est pas disponible en mode démo.') }
+  async setMcpServerEnabled(): Promise<McpServerRecord> { throw new ChatServiceError('La gestion des serveurs MCP n’est pas disponible en mode démo.') }
   async deleteMcpServer(): Promise<void> { throw new ChatServiceError('La gestion des serveurs MCP n’est pas disponible en mode démo.') }
   async connectConnector(connectorId: string): Promise<string> { void connectorId; throw new ChatServiceError('Les connecteurs ne sont pas disponibles en mode démo.') }
   async disconnectConnector(connectorId: string): Promise<void> { void connectorId; throw new ChatServiceError('Les connecteurs ne sont pas disponibles en mode démo.') }
@@ -196,6 +300,9 @@ class DemoAdapter implements ChatAdapter {
   async setConversationConnectors(conversationId: string, connectorIds: string[]): Promise<ConversationConnectorPreferences> {
     useConversationsStore.getState().setConnectorIds(conversationId, connectorIds)
     return this.getConversationConnectors(conversationId)
+  }
+  async activateConversationMcp(): Promise<McpConversationActivation> {
+    throw new ChatServiceError('La gestion des serveurs MCP n’est pas disponible en mode démo.')
   }
   async streamMessage(conversationId: string, content: string, signal: AbortSignal) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
@@ -218,7 +325,7 @@ class OpenAIAdapter implements ChatAdapter {
     } catch {
       throw new ChatServiceError('Impossible de joindre le backend. Vérifiez qu’il est démarré puis réessayez.')
     }
-    if (!response.ok) throw responseError(response.status)
+    if (!response.ok) throw await errorFromResponse(response)
     if (response.status === 204) return undefined as T
     return await response.json() as T
   }
@@ -258,6 +365,19 @@ class OpenAIAdapter implements ChatAdapter {
     return this.request<McpServerRecord[]>('/connectors/mcp')
   }
 
+  async searchMcpCatalog(query: string, category: string, page: number) {
+    const params = new URLSearchParams({ q: query, category, page: String(page) })
+    return this.request<McpCatalogPage>(`/connectors/mcp/catalog?${params.toString()}`)
+  }
+
+  async refreshMcpCatalog() {
+    return this.request<McpCatalogRefresh>('/connectors/mcp/catalog/refresh', { method: 'POST' })
+  }
+
+  async getMcpCatalogEntry(catalogId: string) {
+    return this.request<McpCatalogEntry>(`/connectors/mcp/catalog/${catalogId.split('/').map(encodeURIComponent).join('/')}`)
+  }
+
   async createMcpServer(payload: McpServerCreate) {
     return this.request<McpServerRecord>('/connectors/mcp', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -268,9 +388,21 @@ class OpenAIAdapter implements ChatAdapter {
     return this.request<McpServerRecord>(`/connectors/mcp/${encodeURIComponent(serverId)}/refresh`, { method: 'POST' })
   }
 
+  async replaceMcpCredential(serverId: string, authToken: string) {
+    return this.request<McpServerRecord>(`/connectors/mcp/${encodeURIComponent(serverId)}/credential`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ auth_token: authToken }),
+    })
+  }
+
   async setMcpServerTools(serverId: string, toolNames: string[]) {
     return this.request<McpServerRecord>(`/connectors/mcp/${encodeURIComponent(serverId)}/tools`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool_names: toolNames }),
+    })
+  }
+
+  async setMcpServerEnabled(serverId: string, enabled: boolean) {
+    return this.request<McpServerRecord>(`/connectors/mcp/${encodeURIComponent(serverId)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
     })
   }
 
@@ -300,22 +432,34 @@ class OpenAIAdapter implements ChatAdapter {
     })
   }
 
+  async activateConversationMcp(conversationId: string, catalogId: string, authToken?: string) {
+    return this.request<McpConversationActivation>(`/conversations/${encodeURIComponent(conversationId)}/mcp`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ catalog_id: catalogId, ...(authToken ? { auth_token: authToken } : {}) }),
+    })
+  }
+
   async checkHealth() {
     return this.request<ChatBackendHealth>('/health')
   }
 
-  async streamMessage(conversationId: string, content: string, signal: AbortSignal, connectorIds: string[], onDelta: (delta: string) => void, onExecution?: (execution: Execution) => void) {
+  async streamMessage(conversationId: string, content: string, signal: AbortSignal, connectorIds: string[], onDelta: (delta: string) => void, onExecution?: (execution: Execution) => void, onSuggestion?: (suggestions: McpSuggestion[]) => void, useConnectedTools = false, resumeWithTools = false) {
     let response: Response
     try {
       response = await fetch(`${this.baseUrl}/conversations/${encodeURIComponent(conversationId)}/messages/stream`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' }, credentials: 'include',
-        body: JSON.stringify({ content, connector_ids: connectorIds }), signal,
+        body: JSON.stringify({
+          content: resumeWithTools ? '' : content,
+          connector_ids: connectorIds,
+          ...(useConnectedTools ? { use_connected_tools: true } : {}),
+          ...(resumeWithTools ? { resume_with_tools: true } : {}),
+        }), signal,
       })
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') throw error
       throw new ChatServiceError('Impossible de joindre le backend. Vérifiez qu’il est démarré puis réessayez.')
     }
-    if (!response.ok) throw responseError(response.status)
+    if (!response.ok) throw await errorFromResponse(response)
     if (!response.body) throw new ChatServiceError('Le backend n’a pas fourni de flux de réponse.')
     if (!response.headers.get('content-type')?.includes('text/event-stream')) {
       throw new ChatServiceError('Le backend a renvoyé un format de réponse inattendu.')
@@ -325,12 +469,17 @@ class OpenAIAdapter implements ChatAdapter {
     const decoder = new TextDecoder()
     let buffer = ''
     let finalMessage: Message | null = null
+    let finished = false
     const processFrame = (frame: string) => {
       const parsed = parseOrchestrationEvent(frame)
       if (!parsed) return
       if (parsed.type === 'delta') onDelta(parsed.delta)
+      if (parsed.type === 'mcp.suggestion') onSuggestion?.(parsed.suggestions)
       if (parsed.type === 'execution.created') onExecution?.(parsed.execution)
-      if (parsed.type === 'done') finalMessage = asMessage(parsed.message)
+      if (parsed.type === 'done') {
+        finished = true
+        finalMessage = parsed.message ? asMessage(parsed.message) : null
+      }
       if (parsed.type === 'error') throw new ChatServiceError(parsed.message)
     }
 
@@ -350,7 +499,7 @@ class OpenAIAdapter implements ChatAdapter {
     } finally {
       reader.releaseLock()
     }
-    if (!finalMessage) throw new ChatServiceError('Le flux s’est terminé sans réponse complète.')
+    if (!finished) throw new ChatServiceError('Le flux s’est terminé sans réponse complète.')
     return finalMessage
   }
 }

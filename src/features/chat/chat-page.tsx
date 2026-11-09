@@ -5,12 +5,13 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { ConnectorSelector } from '@/features/chat/connector-selector'
 import { useConversationsStore } from '@/stores/use-conversations-store'
 import { useOpenAIChatStore } from '@/stores/use-openai-chat-store'
 import { useAuthStore } from '@/stores/use-auth-store'
-import { chatAdapter, type ChatBackendHealth, type ConnectorCatalogItem } from '@/services/chat-adapters'
+import { ChatServiceError, chatAdapter, type ChatBackendHealth, type ConnectorCatalogItem, type McpSuggestion } from '@/services/chat-adapters'
 import type { Message } from '@/types/domain'
 import { ExecutionCard } from '@/features/executions/execution-card'
 import type { Execution } from '@/types/execution'
@@ -21,6 +22,74 @@ const suggestions = [
   'Conçois un plan de tests pour une application web',
 ]
 const EMPTY_CONNECTOR_IDS: string[] = []
+const pendingMcpSuggestions = new Map<string, McpSuggestion[]>()
+
+function McpSuggestionCard({ suggestions, disabled, activatingId, onActivate, onDismiss }: {
+  suggestions: McpSuggestion[]
+  disabled: boolean
+  activatingId: string | null
+  onActivate: (item: McpSuggestion, authToken?: string) => Promise<void>
+  onDismiss: () => void
+}) {
+  const [tokenFor, setTokenFor] = useState<string | null>(null)
+  const [token, setToken] = useState('')
+  const [connectFor, setConnectFor] = useState<string | null>(null)
+  const [connectUrl, setConnectUrl] = useState('')
+  const [localError, setLocalError] = useState<string | null>(null)
+  if (suggestions.length === 0) return null
+
+  async function activate(item: McpSuggestion) {
+    setLocalError(null)
+    try {
+      if (tokenFor === item.id) {
+        if (!token.trim()) {
+          setLocalError('Ce serveur MCP demande un jeton utilisateur.')
+          return
+        }
+        await onActivate(item, token.trim())
+        return
+      }
+      const entry = await chatAdapter.getMcpCatalogEntry(item.id)
+      if (entry.requires_token) {
+        setTokenFor(item.id)
+        setToken('')
+        return
+      }
+      await onActivate(item)
+    } catch (error) {
+      if (error instanceof ChatServiceError && error.needsToken) {
+        setTokenFor(item.id)
+        setToken('')
+        setConnectFor(null)
+        setLocalError('Ce serveur MCP demande un jeton utilisateur.')
+        return
+      }
+      if (error instanceof ChatServiceError && error.connectUrl) {
+        setConnectFor(item.id)
+        setConnectUrl(error.connectUrl)
+        setTokenFor(null)
+        setLocalError(error.message)
+        return
+      }
+      setLocalError(error instanceof Error ? error.message : 'Cette fiche n’a pas pu être lue.')
+    }
+  }
+
+  return <div role="region" aria-label="Serveurs MCP suggérés" className="mb-3 rounded-xl border border-primary/20 bg-primary/5 p-3 text-left">
+    <ul className="space-y-2">{suggestions.map((item) => <li key={item.id} className="space-y-2 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span><span className="font-medium">{item.name}</span> <span className="text-muted-foreground">· {item.category}</span></span>
+        <Button type="button" size="sm" variant="outline" disabled={disabled || activatingId !== null} title={disabled ? 'Disponible à la fin de la réponse' : undefined} onClick={() => void activate(item)}>
+          {activatingId === item.id ? 'Activation…' : 'Activer'}
+        </Button>
+      </div>
+      {tokenFor === item.id && <Input type="password" autoComplete="off" value={token} placeholder="Jeton utilisateur" aria-label={`Jeton pour ${item.name}`} onChange={(event) => setToken(event.target.value)} />}
+      {connectFor === item.id && connectUrl && <a href={connectUrl} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-4">Ouvrir la page de connexion</a>}
+    </li>)}</ul>
+    {localError && <p role="alert" className="mt-2 text-xs text-destructive">{localError}</p>}
+    <Button type="button" variant="ghost" size="sm" className="mt-2" onClick={onDismiss}>Plus tard</Button>
+  </div>
+}
 
 function AssistantMessage({ message, onExecutionComplete }: { message: Message; onExecutionComplete?: () => void }) {
   const [copied, setCopied] = useState(false)
@@ -102,7 +171,19 @@ export function ChatPage() {
   const stickToBottom = useRef(true)
   const [suggestion, setSuggestion] = useState('')
   const [requestPending, setRequestPending] = useState(false)
+  const [activatingSuggestionId, setActivatingSuggestionId] = useState<string | null>(null)
   const [chatError, setChatError] = useState<string | null>(null)
+  const [mcpSuggestionState, setMcpSuggestionState] = useState<{ conversationId: string | null; suggestions: McpSuggestion[] }>(() => ({
+    conversationId: activeConversationId,
+    suggestions: activeConversationId ? pendingMcpSuggestions.get(activeConversationId) ?? [] : [],
+  }))
+  if (mcpSuggestionState.conversationId !== activeConversationId) {
+    setMcpSuggestionState({
+      conversationId: activeConversationId,
+      suggestions: activeConversationId ? pendingMcpSuggestions.get(activeConversationId) ?? [] : [],
+    })
+  }
+  const mcpSuggestions = mcpSuggestionState.suggestions
   const [health, setHealth] = useState<ChatBackendHealth | null>(null)
   const [connectorCatalog, setConnectorCatalog] = useState<ConnectorCatalogItem[]>([])
   const lastMessageText = messages.at(-1)?.content
@@ -146,7 +227,7 @@ export function ChatPage() {
     return () => { cancelled = true }
   }, [activeConversationId, loadedRemoteMessageIds, setRemoteMessages, setRemoteMessageLoading])
 
-  async function handleSend(content: string) {
+  async function handleSend(content: string, useConnectedTools = false): Promise<boolean> {
     setChatError(null)
     let id = activeConversationId
     let navigateAfterResponse = false
@@ -164,9 +245,11 @@ export function ChatPage() {
         setPendingConversationId(id)
         navigateAfterResponse = true
       }
+      pendingMcpSuggestions.delete(id)
+      setMcpSuggestionState({ conversationId: id, suggestions: [] })
       if (chatAdapter.mode === 'demo') {
         await chatAdapter.streamMessage(id, content, controller.signal, [], () => undefined)
-        return
+        return true
       }
 
       const now = new Date().toISOString()
@@ -182,11 +265,20 @@ export function ChatPage() {
         }, (execution: Execution) => {
           const current = useOpenAIChatStore.getState().messages.find((message) => message.id === pendingId)
           if (current) upsertRemoteMessage({ ...current, executionId: execution.id })
-        })
+        }, (suggestions) => {
+          if (!id) return
+          pendingMcpSuggestions.set(id, suggestions)
+          setMcpSuggestionState({ conversationId: id, suggestions })
+        }, useConnectedTools)
         removeRemoteMessage(pendingId)
-        upsertRemoteMessage(response)
+        if (response) upsertRemoteMessage(response)
+        try {
+          const preferences = await chatAdapter.getConversationConnectors(id)
+          setRemoteConnectorIds(id, preferences.connector_ids)
+        } catch { /* The reply is already visible if the connector refresh fails. */ }
         const updatedConversations = await chatAdapter.listConversations()
         useOpenAIChatStore.getState().setConversations(updatedConversations)
+        return true
       } catch (error) {
         const interrupted = error instanceof DOMException && error.name === 'AbortError'
         const visibleMessage = interrupted ? 'Réponse interrompue.' : error instanceof Error ? error.message : 'Le message n’a pas pu être traité.'
@@ -196,9 +288,11 @@ export function ChatPage() {
           setChatError(visibleMessage)
           try { useOpenAIChatStore.getState().setConversations(await chatAdapter.listConversations()) } catch { /* The original request error remains visible. */ }
         }
+        return false
       }
     } catch (error) {
       setChatError(error instanceof Error ? error.message : 'La conversation n’a pas pu être créée.')
+      return false
     } finally {
       if (activeRequest.current === controller) activeRequest.current = null
       setRequestPending(false)
@@ -208,6 +302,73 @@ export function ChatPage() {
         navigate(`/conversations/${id}`)
       }
     }
+  }
+
+  async function continueWithTools(conversationId: string) {
+    const controller = new AbortController()
+    activeRequest.current = controller
+    setRequestPending(true)
+    const pendingId = `local-assistant-${crypto.randomUUID()}`
+    const now = new Date().toISOString()
+    upsertRemoteMessage({ id: pendingId, conversationId, role: 'assistant', content: '', createdAt: now, status: 'streaming', simulated: false })
+    try {
+      const connectorIds = useOpenAIChatStore.getState().connectorIdsByConversation[conversationId] ?? []
+      const response = await chatAdapter.streamMessage(
+        conversationId, '', controller.signal, connectorIds,
+        (delta) => {
+          const current = useOpenAIChatStore.getState().messages.find((message) => message.id === pendingId)
+          if (current) upsertRemoteMessage({ ...current, content: current.content + delta })
+        },
+        undefined, undefined, false, true,
+      )
+      removeRemoteMessage(pendingId)
+      if (!response) throw new Error('La réponse n’a pas pu être reprise.')
+      upsertRemoteMessage(response)
+      try {
+        const preferences = await chatAdapter.getConversationConnectors(conversationId)
+        setRemoteConnectorIds(conversationId, preferences.connector_ids)
+      } catch { /* The reply is already visible. */ }
+      useOpenAIChatStore.getState().setConversations(await chatAdapter.listConversations())
+    } catch (error) {
+      const interrupted = error instanceof DOMException && error.name === 'AbortError'
+      const visibleMessage = interrupted ? 'Réponse interrompue.' : error instanceof Error ? error.message : 'La réponse n’a pas pu être reprise.'
+      const pendingMessage = useOpenAIChatStore.getState().messages.find((message) => message.id === pendingId)
+      if (pendingMessage) upsertRemoteMessage({ ...pendingMessage, content: visibleMessage, status: 'failed' })
+      if (!interrupted) setChatError(visibleMessage)
+    } finally {
+      if (activeRequest.current === controller) activeRequest.current = null
+      setRequestPending(false)
+    }
+  }
+
+  async function activateSuggestion(item: McpSuggestion, authToken?: string) {
+    if (!activeConversationId || chatAdapter.mode !== 'openai') {
+      setChatError('Activez ce serveur depuis une conversation connectée au backend.')
+      return
+    }
+    setActivatingSuggestionId(item.id)
+    setChatError(null)
+    try {
+      const result = await chatAdapter.activateConversationMcp(activeConversationId, item.id, authToken)
+      setRemoteConnectorIds(activeConversationId, result.connector_ids)
+      try {
+        setConnectorCatalog(await chatAdapter.listConnectors())
+      } catch { /* The conversation already keeps the selected server. */ }
+      const remaining = mcpSuggestions.filter((suggestion) => suggestion.id !== item.id)
+      pendingMcpSuggestions.set(activeConversationId, remaining)
+      setMcpSuggestionState({ conversationId: activeConversationId, suggestions: remaining })
+      await continueWithTools(activeConversationId)
+    } catch (error) {
+      if (error instanceof ChatServiceError && (error.needsToken || error.connectUrl)) throw error
+      setChatError(error instanceof Error ? error.message : 'Ce serveur MCP n’a pas pu être activé.')
+    } finally {
+      setActivatingSuggestionId(null)
+    }
+  }
+
+  function dismissSuggestions() {
+    if (activeConversationId) pendingMcpSuggestions.delete(activeConversationId)
+    setMcpSuggestionState({ conversationId: activeConversationId, suggestions: [] })
   }
 
   async function handleConnectorIdsChange(connectorIds: string[]) {
@@ -234,6 +395,8 @@ export function ChatPage() {
   const isWelcome = !activeConversationId || (chatAdapter.mode === 'demo' && !conversation)
   const conversationLoading = Boolean(activeConversationId && remoteLoadingMessageIds.includes(activeConversationId))
   const cancelResponse = () => activeRequest.current?.abort()
+  const suggestionCard = <McpSuggestionCard suggestions={mcpSuggestions} disabled={requestPending} activatingId={activatingSuggestionId} onActivate={activateSuggestion} onDismiss={dismissSuggestions} />
+  const composerBusy = requestPending || activatingSuggestionId !== null
   return <div className="-mx-5 -mt-6 flex min-h-[calc(100svh-74px)] flex-col sm:-mx-8 sm:-mt-8">
     <div ref={scrollRef} onScroll={(event) => { const element = event.currentTarget; stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100 }} className="flex-1 overflow-y-auto px-5 sm:px-8">
       <div className={`mx-auto w-full max-w-3xl ${isWelcome ? 'flex min-h-[min(66svh,700px)] flex-col justify-center py-12' : 'space-y-7 py-8'}`}>
@@ -245,7 +408,8 @@ export function ChatPage() {
           {chatAdapter.mode === 'openai' && health && !health.openai_configured && <p role="status" className="mx-auto mt-4 max-w-lg rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">Le backend répond, mais la clé OpenAI ou le modèle n’est pas configuré. Complétez <code>backend/.env</code> pour activer les réponses.</p>}
           {chatAdapter.mode === 'openai' && <div className="mt-8 grid gap-2 text-left sm:grid-cols-3">{suggestions.map((item) => <button key={item} type="button" onClick={() => setSuggestion(item)} className="rounded-xl border border-border bg-card p-3.5 text-xs leading-relaxed transition hover:border-primary/30 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="mb-2 block text-primary"><Sparkles aria-hidden="true" className="size-3.5" /></span>{item}</button>)}</div>}
           {chatError && <p role="alert" className="mx-auto mt-4 max-w-2xl rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-left text-xs text-destructive">{chatError}</p>}
-          <div className="mx-auto mt-6 max-w-2xl"><ChatComposer key={suggestion} initialValue={suggestion} onSend={handleSend} onCancel={cancelResponse} connectors={connectorCatalog} selectedConnectorIds={selectedConnectorIds} onConnectorIdsChange={(ids) => void handleConnectorIdsChange(ids)} isSending={requestPending} /></div>
+          {suggestionCard}
+          <div className="mx-auto mt-6 max-w-2xl"><ChatComposer key={suggestion} initialValue={suggestion} onSend={async (content) => { await handleSend(content) }} onCancel={cancelResponse} connectors={connectorCatalog} selectedConnectorIds={selectedConnectorIds} onConnectorIdsChange={(ids) => void handleConnectorIdsChange(ids)} isSending={composerBusy} /></div>
         </div> : <>
           <div className="mb-8 border-b border-border/70 pb-5"><h2 className="font-heading text-xl font-semibold tracking-tight">{conversation?.title ?? 'Conversation'}</h2><p className="mt-1 text-xs text-muted-foreground">{chatAdapter.mode === 'openai' ? 'Historique enregistré dans SQLite · OpenAI' : 'Conversation enregistrée localement · Mode démo'}</p></div>
           {conversationLoading && messages.length === 0 && <p role="status" className="text-sm text-muted-foreground">Chargement de la conversation…</p>}
@@ -257,7 +421,7 @@ export function ChatPage() {
         </>}
       </div>
     </div>
-    {!isWelcome && <div className="sticky bottom-0 border-t border-border/60 bg-background/90 px-5 py-4 backdrop-blur-xl sm:px-8"><div className="mx-auto max-w-3xl">{chatError && <p role="alert" className="mb-3 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">{chatError}</p>}<ChatComposer onSend={handleSend} onCancel={cancelResponse} connectors={connectorCatalog} selectedConnectorIds={selectedConnectorIds} onConnectorIdsChange={(ids) => void handleConnectorIdsChange(ids)} isSending={requestPending} /><p className="mt-2 text-center text-[10px] text-muted-foreground">{chatAdapter.mode === 'openai' ? 'Réponses générées par OpenAI · Aucun outil externe n’est activé.' : 'Mutual-AId est en mode démo. Les réponses sont simulées.'}</p></div></div>}
+    {!isWelcome && <div className="sticky bottom-0 border-t border-border/60 bg-background/90 px-5 py-4 backdrop-blur-xl sm:px-8"><div className="mx-auto max-w-3xl">{chatError && <p role="alert" className="mb-3 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">{chatError}</p>}{suggestionCard}<ChatComposer onSend={async (content) => { await handleSend(content) }} onCancel={cancelResponse} connectors={connectorCatalog} selectedConnectorIds={selectedConnectorIds} onConnectorIdsChange={(ids) => void handleConnectorIdsChange(ids)} isSending={composerBusy} /><p className="mt-2 text-center text-[10px] text-muted-foreground">{chatAdapter.mode === 'openai' ? (selectedConnectorIds.length > 0 ? 'Les outils des serveurs MCP activés peuvent servir à répondre.' : 'Réponses générées par OpenAI · Aucun outil externe n’est activé.') : 'Mutual-AId est en mode démo. Les réponses sont simulées.'}</p></div></div>}
     {isWelcome && <div className="mt-auto px-5 pb-5 text-center text-[10px] text-muted-foreground sm:px-8">{chatAdapter.mode === 'openai' ? 'Mutual-AId envoie les messages à votre backend local.' : 'Mutual-AId est en mode démo · Aucun modèle IA ni service externe n’est connecté.'}</div>}
   </div>
 }
