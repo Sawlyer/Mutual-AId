@@ -1,5 +1,6 @@
 import json
 from uuid import uuid4
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException
 
@@ -28,6 +29,7 @@ class McpService:
             raise HTTPException(status_code=409, detail="La limite de serveurs MCP est atteinte.")
         encrypted_token = None
         if payload.auth_token:
+            _require_https_for_credentials(payload.url)
             key = self.settings.connector_token_key
             if not key:
                 raise HTTPException(status_code=503, detail="Le chiffrement des identifiants de connecteur n’est pas configuré.")
@@ -39,6 +41,8 @@ class McpService:
         return self._read(server)
 
     def store_auth_token(self, user_id: str, server_id: str, auth_token: str) -> None:
+        server = self.get_server(user_id, server_id)
+        _require_https_for_credentials(str(server["url"]))
         key = self.settings.connector_token_key
         if not key:
             raise HTTPException(status_code=503, detail="Le chiffrement des identifiants de connecteur n’est pas configuré.")
@@ -108,3 +112,8 @@ class McpService:
             approved_tool_names=json.loads(str(row["approved_tools_json"])),
             last_checked_at=row["last_checked_at"], last_error=row["last_error"],
         )
+
+
+def _require_https_for_credentials(url: str) -> None:
+    if urlsplit(url).scheme.lower() != "https":
+        raise HTTPException(status_code=422, detail="Un jeton MCP exige une adresse HTTPS pour rester chiffré en transit.")

@@ -198,6 +198,8 @@ def _redact(value: str) -> str:
 
 def safe_mcp_http_client(*, allow_loopback: bool) -> Callable[..., httpx2.AsyncClient]:
     async def guard_request(request: httpx2.Request) -> None:
+        if request.url.scheme != "https" and request.headers.get("authorization"):
+            raise ValueError("MCP credentials require HTTPS")
         validate_public_endpoint(str(request.url), resolve=True, allow_loopback=allow_loopback)
 
     async def reject_redirect(response: httpx2.Response) -> None:

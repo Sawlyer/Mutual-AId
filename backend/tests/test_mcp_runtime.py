@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import httpx2
 import pytest
 from cryptography.fernet import Fernet
+from fastapi import HTTPException
 from mcp.types import Tool as SdkMcpTool
 from mcp.types import ToolAnnotations
 
@@ -339,7 +340,35 @@ def test_public_endpoint_rejects_loopback_link_local_private_and_redirects():
         with pytest.raises(httpx2.RequestError, match="redirect"):
             await client.get("https://8.8.8.8/mcp")
 
+        client = factory(headers={"Authorization": "Bearer secret-value"})
+        client._transport = httpx2.MockTransport(lambda request: httpx2.Response(200))
+        with pytest.raises(ValueError, match="HTTPS"):
+            await client.get("http://8.8.8.8/mcp")
+
     asyncio.run(exercise_client())
+
+
+def test_mcp_credentials_require_https_at_storage_time(tmp_path):
+    database = Database(tmp_path / "mcp-credential-transport.sqlite3")
+    database.initialize()
+    settings = Settings(
+        database_path=tmp_path / "mcp-credential-transport.sqlite3",
+        openai_api_key="",
+        openai_model="",
+        connector_token_encryption_key=Fernet.generate_key().decode(),
+    )
+    service = McpService(database, settings)
+
+    with pytest.raises(HTTPException, match="HTTPS"):
+        service.create_server("user-1", McpServerCreate(
+            name="Insecure", url="http://8.8.8.8/mcp", auth_token="secret-value",
+        ))
+
+    server = service.create_server("user-1", McpServerCreate(
+        name="No token", url="http://8.8.8.8/mcp",
+    ))
+    with pytest.raises(HTTPException, match="HTTPS"):
+        service.store_auth_token("user-1", str(server.id), "secret-value")
 
 
 def test_call_refuses_write_unknown_unassigned_and_unavailable_tools(tmp_path):
