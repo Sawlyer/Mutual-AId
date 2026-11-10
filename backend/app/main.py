@@ -125,10 +125,14 @@ TrustedOrigin = Depends(trusted_origin)
 
 def set_session_cookie(response: Response, token: str, settings: Settings) -> None:
     response.set_cookie(
-        settings.auth_cookie_name, token, max_age=settings.auth_session_days * 86400,
-        httponly=True, secure=settings.auth_cookie_secure, samesite="lax", path="/api",
+        settings.auth_cookie_name,
+        token,
+        max_age=settings.auth_session_days * 86400,
+        httponly=True,
+        secure=settings.auth_cookie_secure,
+        samesite="lax",
+        path="/",
     )
-
 
 @router.post("/auth/register", response_model=AuthUserRead, status_code=201, dependencies=[Depends(rate_limit), TrustedOrigin])
 async def register(payload: AuthRegister, response: Response, database: Db, settings: AppSettings) -> AuthUserRead:
@@ -655,6 +659,11 @@ async def connect_google_connector(connector_id: str, request: Request, user: Cu
 async def google_calendar_callback(request: Request, database: Db, settings: AppSettings) -> RedirectResponse:
     token = request.cookies.get(settings.auth_cookie_name)
     user = database.get_user_for_session(token_digest(token)) if token else None
+    print("OAuth callback session check: cookie_name=%s, cookie_present=%s, user_found=%s",
+        settings.auth_cookie_name,
+        bool(token),
+        user is not None,)
+
     origin = settings.allowed_origins[0].rstrip("/")
     if user is None:
         return RedirectResponse(f"{origin}/connectors?oauth_error=session", status_code=303,
