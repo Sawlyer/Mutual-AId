@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, CircleAlert, Clock3, Download, LoaderCircle, Pause, Play, Square, Workflow } from 'lucide-react'
+import { ArrowLeft, CircleAlert, Clock3, Download, Eye, LoaderCircle, Pause, Play, Square, Workflow, X } from 'lucide-react'
 import { Link, useParams } from 'react-router'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { executionService } from '@/services/execution-service'
-import type { Execution, ExecutionArtifact, ExecutionEvent } from '@/types/execution'
+import type { Execution, ExecutionArtifact, ExecutionArtifactContent, ExecutionEvent } from '@/types/execution'
 import { WorkflowGraph } from '@/features/executions/workflow-graph'
+import { ArtifactPreview } from '@/features/executions/artifact-preview'
+import { inspectResultCompleteness } from '@/features/executions/result-completeness'
 
 const terminal = new Set<Execution['status']>(['completed', 'partial', 'failed', 'cancelled', 'interrupted'])
 const executionStatusLabels: Record<Execution['status'], string> = {
@@ -15,6 +17,7 @@ const executionStatusLabels: Record<Execution['status'], string> = {
   pausing: 'Mise en pause',
   paused: 'En pause',
   awaiting_approval: 'Approbation requise',
+  validating: 'Revue du résultat',
   completed: 'Terminée',
   partial: 'Partielle',
   failed: 'Échec',
@@ -40,6 +43,11 @@ const eventLabels: Record<string, string> = {
   'execution.pausing': 'Mise en pause demandée',
   'execution.paused': 'Exécution mise en pause',
   'execution.awaiting_approval': 'Une action attend votre approbation',
+  'execution.validating': 'Revue du résultat en cours',
+  'execution.review_verified': 'Résultat vérifié par l’agent IA',
+  'execution.review_needs_attention': 'La revue IA recommande une vérification',
+  'execution.review_unavailable': 'Revue IA indisponible',
+  'execution.review_skipped': 'Revue IA ignorée',
   'execution.completed': 'Exécution terminée',
   'execution.partial': 'Exécution partielle',
   'execution.failed': 'Exécution échouée',
@@ -84,6 +92,8 @@ export function ExecutionPage() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
+  const [previewingId, setPreviewingId] = useState<string | null>(null)
+  const [previewArtifact, setPreviewArtifact] = useState<ExecutionArtifactContent | null>(null)
   const [streamConnected, setStreamConnected] = useState<boolean | null>(null)
   const [streamEpoch, setStreamEpoch] = useState(0)
 
@@ -207,7 +217,22 @@ export function ExecutionPage() {
     }
   }
 
+  async function previewArtifactContent(artifactId: string) {
+    setPreviewingId(artifactId)
+    try {
+      setPreviewArtifact(await executionService.getArtifact(executionId, artifactId))
+      setError('')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Le résultat n’a pas pu être affiché.')
+    } finally {
+      setPreviewingId(null)
+    }
+  }
+
   const completedTasks = execution?.tasks.filter((task) => task.status === 'completed').length ?? 0
+  const resultCompleteness = execution
+    ? inspectResultCompleteness(execution.status, execution.tasks, artifacts)
+    : null
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -286,6 +311,42 @@ export function ExecutionPage() {
           </div>
 
           <WorkflowGraph execution={execution} />
+
+          {resultCompleteness && (
+            <Card aria-live="polite">
+              <CardContent className="space-y-1 p-4">
+                <p className="text-sm font-medium">
+                  {resultCompleteness.status === 'complete'
+                    ? execution.result_review_status === 'verified'
+                      ? 'Résultat vérifié par l’agent IA'
+                      : execution.result_review_status === 'needs_review'
+                        ? 'Résultat à vérifier'
+                        : execution.result_review_status === 'unavailable'
+                          ? 'Revue IA indisponible'
+                          : execution.result_review_status === 'skipped'
+                            ? 'Revue IA ignorée'
+                            : execution.status === 'validating'
+                              ? 'Vérification du résultat en cours'
+                              : 'Résultat complet'
+                    : resultCompleteness.status === 'partial'
+                      ? 'Résultat partiel'
+                      : 'Vérification de complétude en cours'}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {resultCompleteness.status === 'complete'
+                    ? execution.result_review_feedback ?? 'Chaque tâche terminée possède un résultat archivé.'
+                    : resultCompleteness.status === 'partial'
+                      ? `${resultCompleteness.completedTasks}/${resultCompleteness.totalTasks} tâches ont produit un résultat archivé.`
+                      : 'Les résultats seront vérifiés lorsque les tâches et leurs fichiers seront enregistrés.'}
+                </p>
+                {resultCompleteness.missingTaskIds.length > 0 && terminal.has(execution.status) && (
+                  <p className="text-xs text-muted-foreground">
+                    À vérifier : {resultCompleteness.missingTaskIds.map((id) => execution.tasks.find((task) => task.id === id)?.title ?? id).join(', ')}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           <section aria-label="État des tâches" className="space-y-3">
             <h2 className="text-sm font-semibold">Tâches</h2>
@@ -367,6 +428,16 @@ export function ExecutionPage() {
                         </p>
                       </div>
                       <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={previewingId === artifact.id}
+                        onClick={() => void previewArtifactContent(artifact.id)}
+                        aria-label={`Afficher ${artifact.name}`}
+                      >
+                        {previewingId === artifact.id ? <LoaderCircle className="animate-spin" /> : <Eye />}
+                        <span className="sr-only sm:not-sr-only">Aperçu</span>
+                      </Button>
+                      <Button
                         variant="outline"
                         size="sm"
                         disabled={downloadingId === artifact.id}
@@ -383,6 +454,22 @@ export function ExecutionPage() {
               </div>
             ) : (
               <Card><CardContent className="p-4 text-sm text-muted-foreground">Aucun résultat n’est disponible pour le moment.</CardContent></Card>
+            )}
+            {previewArtifact && (
+              <Card>
+                <CardContent className="space-y-3 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs text-muted-foreground">Aperçu du résultat</p>
+                      <h3 className="truncate text-sm font-medium">{previewArtifact.name}</h3>
+                    </div>
+                    <Button variant="ghost" size="icon" aria-label="Fermer l’aperçu" onClick={() => setPreviewArtifact(null)}>
+                      <X />
+                    </Button>
+                  </div>
+                  <ArtifactPreview content={previewArtifact.content} mediaType={previewArtifact.media_type} />
+                </CardContent>
+              </Card>
             )}
           </section>
 

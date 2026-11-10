@@ -7,7 +7,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { executionService } from '@/services/execution-service'
 import type { Execution } from '@/types/execution'
 
-const labels: Record<string, string> = { planning: 'Planification', running: 'En cours', awaiting_approval: 'Approbation requise', completed: 'Terminée', partial: 'Partielle', failed: 'Échec', cancelled: 'Annulée', interrupted: 'Interrompue' }
+const labels: Record<string, string> = { planning: 'Planification', running: 'En cours', awaiting_approval: 'Approbation requise', validating: 'Revue du résultat', completed: 'Terminée', partial: 'Partielle', failed: 'Échec', cancelled: 'Annulée', interrupted: 'Interrompue' }
 
 export function ExecutionsPage() {
   const [executions, setExecutions] = useState<Execution[]>([])

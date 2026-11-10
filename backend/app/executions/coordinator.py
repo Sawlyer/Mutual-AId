@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Protocol
 
 from agents import Agent, RunConfig, Runner
 
@@ -13,9 +14,15 @@ from app.connectors.mcp_runtime import McpAuthorizationError, McpRuntime, MCP_CO
 from app.db import Database
 from app.executions.models import ExecutionRead, TaskRead
 from app.executions.repository import ExecutionRepository
+from app.executions.reviewer import ExecutionResultReview, ExecutionResultReviewer
 from app.planning.schemas import ExecutionPlan
 
 logger = logging.getLogger(__name__)
+RESULT_REVIEW_TIMEOUT_SECONDS = 30
+
+
+class ResultReviewer(Protocol):
+    async def review(self, execution: ExecutionRead) -> ExecutionResultReview: ...
 
 
 class AgentTaskExecutor:
@@ -97,7 +104,8 @@ class AgentTaskExecutor:
 class ExecutionCoordinator:
     def __init__(self, repository: ExecutionRepository, agent_service: AgentService, settings: Settings,
                  database: Database, tool_registry: ToolRegistry, google_oauth: GoogleOAuthClient | None,
-                 github_oauth: GitHubAppOAuthClient | None = None, mcp_runtime: McpRuntime | None = None):
+                 github_oauth: GitHubAppOAuthClient | None = None, mcp_runtime: McpRuntime | None = None,
+                 result_reviewer: ResultReviewer | None = None):
         self.repository = repository
         self.agent_service = agent_service
         self.settings = settings
@@ -106,6 +114,7 @@ class ExecutionCoordinator:
         self.google_oauth = google_oauth
         self.github_oauth = github_oauth
         self.mcp_runtime = mcp_runtime
+        self.result_reviewer = result_reviewer
         self._background: dict[str, asyncio.Task[None]] = {}
         self._cancel: dict[str, asyncio.Event] = {}
         self._pause: dict[str, asyncio.Event] = {}
@@ -157,14 +166,64 @@ class ExecutionCoordinator:
                                  pause_event=pause_event)
         try:
             await scheduler.run()
+            current = self.repository.get(user_id, execution_id)
+            if current and current.status == "validating":
+                await self._review_completed_execution(user_id, current)
+            elif current and current.status in {"partial", "failed", "cancelled", "interrupted"} and current.result_review_status == "pending":
+                self.repository.set_result_review(
+                    user_id, execution_id, "skipped", "La revue finale nécessite une exécution complète.",
+                )
         except asyncio.CancelledError:
+            current = self.repository.get(user_id, execution_id)
+            if current and current.result_review_status == "pending":
+                self.repository.set_result_review(
+                    user_id, execution_id, "skipped", "La revue finale a été interrompue par l’annulation.",
+                )
             self.repository.set_execution_status(user_id, execution_id, "cancelled", "Exécution annulée")
             self._persist_final_answer(user_id, execution_id)
             raise
         except Exception:
             logger.exception("Execution failed for %s", execution_id)
             self.repository.set_execution_status(user_id, execution_id, "failed", "L’exécution n’a pas pu être terminée.")
+            current = self.repository.get(user_id, execution_id)
+            if current and current.result_review_status == "pending":
+                self.repository.set_result_review(
+                    user_id, execution_id, "skipped", "La revue finale nécessite une exécution complète.",
+                )
         self._persist_final_answer(user_id, execution_id)
+
+    async def _review_completed_execution(self, user_id: str, execution: ExecutionRead) -> None:
+        if execution.result_review_status in {"verified", "needs_review"}:
+            self.repository.set_execution_status(user_id, execution.id, "completed", "Revue précédente restaurée")
+            return
+
+        if self.result_reviewer is None:
+            self.repository.set_result_review(
+                user_id, execution.id, "unavailable", "La revue automatique n’est pas configurée; vérifiez le résultat manuellement.",
+            )
+        else:
+            try:
+                review = await asyncio.wait_for(
+                    self.result_reviewer.review(execution), timeout=RESULT_REVIEW_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Execution result review failed for %s", execution.id)
+                self.repository.set_result_review(
+                    user_id, execution.id, "unavailable", "La revue automatique est indisponible; vérifiez le résultat manuellement.",
+                )
+            else:
+                self.repository.set_result_review(user_id, execution.id, review.verdict, review.feedback)
+
+        reviewed = self.repository.get(user_id, execution.id)
+        if reviewed and reviewed.result_review_status == "verified":
+            detail = "Toutes les tâches sont terminées et la revue IA n’a pas relevé d’incohérence."
+        elif reviewed and reviewed.result_review_status == "needs_review":
+            detail = "Les tâches sont terminées; la revue IA signale des points à vérifier."
+        else:
+            detail = "Les tâches sont terminées; la revue IA n’a pas pu être effectuée."
+        self.repository.set_execution_status(user_id, execution.id, "completed", detail)
 
     async def pause(self, user_id: str, execution_id: str) -> ExecutionRead | None:
         execution = self.repository.get(user_id, execution_id)
@@ -201,6 +260,12 @@ class ExecutionCoordinator:
                 lines.extend((f"\n**{task.title}**", task.result))
             elif task.status in {"failed", "blocked", "cancelled", "interrupted"}:
                 lines.append(f"\n**{task.title}** — {task.error or task.status.replace('_', ' ')}")
+        if execution.result_review_status == "verified":
+            lines.append(f"\n**Revue IA :** Résultat jugé cohérent avec l’objectif. {execution.result_review_feedback or ''}".strip())
+        elif execution.result_review_status == "needs_review":
+            lines.append(f"\n**Revue IA : points à vérifier.** {execution.result_review_feedback or ''}".strip())
+        elif execution.result_review_status == "unavailable":
+            lines.append(f"\n**Revue IA indisponible :** vérifiez manuellement les résultats. {execution.result_review_feedback or ''}".strip())
         self.repository.create_final_message_once(user_id, execution_id, "\n".join(lines))
 
     async def cancel(self, user_id: str, execution_id: str) -> ExecutionRead | None:
