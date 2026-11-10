@@ -2,6 +2,7 @@ import logging
 from collections.abc import Sequence
 
 from agents import Agent, RunConfig, Runner
+from openai import AuthenticationError
 
 from app.agents.models import AgentProfileRead
 from app.config import Settings
@@ -23,6 +24,10 @@ reasoning; return only the structured plan fields."""
 
 class PlanningUnavailable(RuntimeError):
     """Safe user-facing planning failure; provider diagnostics are logged by the caller."""
+
+
+class PlanningAuthenticationError(PlanningUnavailable):
+    """The configured OpenAI credential was rejected by the provider."""
 
 
 class Planner:
@@ -89,6 +94,9 @@ class Planner:
         except PlanValidationError as error:
             logger.info("Planning skipped for conversation %s (%s)", request.conversation_id, error)
             return PlanningDecision(summary="Réponse directe", tasks=[], requires_orchestration=False)
+        except AuthenticationError as error:
+            logger.error("Planning authentication failed for conversation %s", request.conversation_id)
+            raise PlanningAuthenticationError("Planning provider authentication failed") from error
         except Exception as error:
             logger.warning("Planning failed for conversation %s (%s)", request.conversation_id, type(error).__name__)
             raise PlanningUnavailable("Planning could not be completed") from error

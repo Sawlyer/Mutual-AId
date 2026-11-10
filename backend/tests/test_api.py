@@ -114,6 +114,28 @@ def test_stream_hides_provider_errors_from_client(tmp_path, monkeypatch):
     assert "PRIVATE_PROVIDER_DIAGNOSTIC" not in response.text
 
 
+def test_stream_explains_openai_authentication_failure_safely(tmp_path):
+    from app.planning.service import PlanningAuthenticationError
+
+    with make_client(tmp_path, openai_configured=True) as client:
+        conversation = client.post("/api/conversations", json={}).json()
+
+        class AuthenticationFailingRouter:
+            async def route(self, *_args):
+                raise PlanningAuthenticationError("private provider diagnostic")
+
+        client.app.state.request_router = AuthenticationFailingRouter()
+        response = client.post(
+            f"/api/conversations/{conversation['id']}/messages/stream",
+            json={"content": "Planifie ceci"},
+        )
+
+    assert response.status_code == 200
+    assert "OPENAI_API_KEY" in response.text
+    assert "recréez" in response.text.lower()
+    assert "private provider diagnostic" not in response.text
+
+
 def test_write_requests_are_rate_limited(tmp_path):
     with make_client(tmp_path, requests_per_minute=2) as client:
         conversation = client.post("/api/conversations", json={}).json()

@@ -23,7 +23,7 @@ from app.executions.models import ExecutionArtifactContent, ExecutionArtifactRea
 from app.executions.repository import ExecutionRepository
 from app.planning.router import RequestRouter
 from app.planning.schemas import PlanningRequest, PlanValidationError
-from app.planning.service import Planner, PlanningUnavailable
+from app.planning.service import PlanningAuthenticationError, Planner, PlanningUnavailable
 from app.connectors.registry import ConnectorRegistry
 from app.connectors.base import Connector, ConnectorPermission, ToolAccess, ToolDescriptor, UnavailableAuthProvider
 from app.connectors.tools import ConnectorAuthorizationError, ToolRegistry
@@ -833,6 +833,12 @@ async def send_message_stream(
                             "execution": execution.model_dump(mode="json"),
                         })
                         return
+                except PlanningAuthenticationError:
+                    yield sse_event("error", {"message": (
+                        "Le backend OpenAI refuse sa clé API. Vérifiez OPENAI_API_KEY sur le "
+                        "serveur puis recréez le backend pour charger la configuration."
+                    )})
+                    return
                 except PlanningUnavailable:
                     yield sse_event("error", {"message": "La demande n’a pas pu être planifiée. Réessayez dans un instant."})
                     return

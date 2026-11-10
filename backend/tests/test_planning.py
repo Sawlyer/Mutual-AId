@@ -141,3 +141,29 @@ def test_an_unusable_plan_becomes_a_direct_answer(tmp_path, monkeypatch):
 
     assert decision.requires_orchestration is False
     assert decision.tasks == []
+
+
+def test_planner_preserves_provider_authentication_failure(tmp_path, monkeypatch):
+    import httpx
+    from openai import AuthenticationError
+
+    from app.config import Settings
+    from app.planning import service as planning_service
+    from app.planning.schemas import PlanningRequest
+
+    auth_error = AuthenticationError(
+        "Incorrect API key provided", response=httpx.Response(
+            401, request=httpx.Request("POST", "https://api.openai.com/v1/responses"),
+        ), body=None,
+    )
+
+    async def failed_run(*_args, **_kwargs):
+        raise auth_error
+
+    monkeypatch.setattr(planning_service.Runner, "run", failed_run)
+    planner = planning_service.Planner(Settings(openai_api_key="invalid", openai_model="test-model"))
+
+    with pytest.raises(planning_service.PlanningAuthenticationError):
+        asyncio.run(planner.plan(
+            PlanningRequest(user_id="user", conversation_id="c", message="Planifie ceci"), [], [],
+        ))
