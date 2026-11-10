@@ -1,3 +1,7 @@
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
+from app.connectors.mcp_runtime import McpRuntime
 from app.connectors.registry import ConnectorRegistry
 from app.connectors.tools import ConnectorAuthorizationError, ToolRegistry
 from app.main import create_app
@@ -8,6 +12,7 @@ from cryptography.fernet import Fernet
 from pydantic import ValidationError
 import pytest
 
+from app.connectors.mcp_catalog import McpCatalog, parse_listing_html, qualify_listing_entry, refresh_catalog, write_catalog
 from app.connectors.mcp_models import McpServerCreate
 from app.connectors.oauth import TokenVault
 
@@ -40,9 +45,8 @@ def test_catalog_lists_only_disconnected_connectors_without_tools(tmp_path):
     assert all(connector["available_tools"] == [] for connector in connectors.values())
 
 
-def test_mcp_server_create_rejects_local_and_credential_embedded_urls():
-    with pytest.raises(ValidationError):
-        McpServerCreate(name="Local", url="http://127.0.0.1:8080/mcp")
+def test_mcp_server_create_rejects_credential_embedded_urls():
+    McpServerCreate(name="Local", url="http://127.0.0.1:8080/mcp")
     with pytest.raises(ValidationError):
         McpServerCreate(name="Secret URL", url="https://user:pass@example.org/mcp")
 
@@ -100,6 +104,7 @@ def test_mcp_connectors_are_user_scoped_in_catalog_and_conversation_preferences(
             {"name": "search_docs", "description": "Search docs", "access": "read"},
         ])
         owner.app.state.database.set_mcp_server_approved_tools(user_id, created["id"], ["search_docs"])
+        owner.app.state.database.set_mcp_server_enabled(user_id, created["id"], True)
         conversation = owner.post("/api/conversations", json={}).json()
         selected = owner.put(f"/api/conversations/{conversation['id']}/connectors", json={"connector_ids": [f"mcp:{created['id']}"]})
         catalog = owner.get("/api/connectors").json()
@@ -117,6 +122,304 @@ def test_mcp_connectors_are_user_scoped_in_catalog_and_conversation_preferences(
         other.post("/api/auth/register", json={"name": "Other", "email": "mcp-other@example.com", "password": "other password long enough"})
         conversation = other.post("/api/conversations", json={}).json()
         assert other.put(f"/api/conversations/{conversation['id']}/connectors", json={"connector_ids": [f"mcp:{created['id']}"]}).status_code == 409
+
+
+HOSTED_PUBLIC = """
+<p>Recherche dans la documentation. Endpoint https://evil.example/mcp et npx docs-mcp.</p>
+<h2>Serveur MCP hébergé</h2>
+<pre><code>npx add-mcp &#x27;https://1.1.1.1/mcp&#x27;</code></pre>
+<h2>Documentation</h2><p>Lecture publique.</p>
+<h2>Sponsorisé</h2><p>Authorization: Bearer sponsor-secret</p>
+"""
+
+HOSTED_TOKEN = """
+<h2>Hosted MCP Server</h2>
+<pre><code>npx add-mcp 'https://8.8.4.4/mcp'</code></pre>
+<p>Pass Authorization: Bearer re_example.</p>
+<h2>Related servers</h2>
+<p>Bearer decoy</p>
+"""
+
+HOSTED_PRIVATE = """
+<h2>Serveur MCP hébergé</h2>
+<code>npx add-mcp 'http://127.0.0.1:8765/mcp'</code>
+"""
+
+LISTING_HTML = """
+<a href="/fr/servers/docs-search?utm_source=listing">
+  <div data-slot="card"><div data-slot="card-title">Docs Search</div><div>Recherche</div>
+  <div data-slot="card-description">Recherche dans la documentation. Endpoint https://evil.example/mcp et npx docs-mcp.</div>
+  <span class="rounded-full">Officiel</span></div></a>
+<a href="https://sponsor.example/go?utm_source=mcpservers">
+  <div data-slot="card"><div data-slot="card-title">Alpha</div><div>Partenaire</div>
+  <div data-slot="card-description">Promotion</div><span class="rounded-full">sponsor</span></div></a>
+"""
+
+
+def test_detail_parser_keeps_the_published_remote_url_only():
+    listing = parse_listing_html(LISTING_HTML)[0]
+    qualified = qualify_listing_entry(listing, HOSTED_PUBLIC)
+    assert qualified is not None
+    assert qualified["endpoint"] == "https://1.1.1.1/mcp"
+    assert qualified["requires_token"] is False
+    assert "evil.example" not in qualified["endpoint"]
+    assert qualify_listing_entry(listing, "<h2>Installation</h2><code>npx docs-mcp</code>") is None
+    assert qualify_listing_entry(listing, HOSTED_PRIVATE) is None
+    assert qualify_listing_entry(listing, "<h2>Serveur MCP hébergé</h2><code>npx add-mcp 'https://docs.example/mcp?token=1'</code>") is None
+    paid = qualify_listing_entry({**listing, "description": "API distante"}, HOSTED_TOKEN)
+    assert paid is not None and paid["requires_token"] is True
+    no_key = qualify_listing_entry({**listing, "description": "Accès sans clé API"}, HOSTED_TOKEN)
+    assert no_key is not None and no_key["requires_token"] is False
+
+
+def test_refresh_keeps_the_snapshot_when_the_directory_refuses(tmp_path):
+    path = tmp_path / "catalog.sqlite3"
+    published = qualify_listing_entry(parse_listing_html(LISTING_HTML)[0], HOSTED_PUBLIC)
+    write_catalog(path, [published])
+    result = refresh_catalog(path, fetch=lambda url: (403, "<title>Just a moment...</title>"))
+    assert result["directory_available"] is False
+    assert result["added"] == 0
+    assert McpCatalog(path).get("docs-search")["endpoint"] == "https://1.1.1.1/mcp"
+
+
+def test_refresh_adds_only_new_published_fiches(tmp_path):
+    path = tmp_path / "catalog.sqlite3"
+    published = qualify_listing_entry(parse_listing_html(LISTING_HTML)[0], HOSTED_PUBLIC)
+    write_catalog(path, [published])
+    calls: list[str] = []
+
+    def fetch(url: str) -> tuple[int, str]:
+        calls.append(url)
+        if url.endswith("page=1"):
+            return 200, LISTING_REFRESH
+        if url.endswith("page=2"):
+            return 404, "missing"
+        if url.endswith("/servers/paid-api"):
+            return 200, HOSTED_TOKEN
+        if url.endswith("/servers/local-only"):
+            return 200, "<h2>Installation</h2><code>npx local-mcp</code>"
+        raise AssertionError(url)
+
+    result = refresh_catalog(path, fetch=fetch)
+    assert result == {"added": 1, "directory_available": True, "message": "1 nouvelle fiche."}
+    assert all(not call.endswith("/servers/docs-search") for call in calls)
+    added = McpCatalog(path).get("paid-api")
+    assert added is not None
+    assert added["endpoint"] == "https://8.8.4.4/mcp"
+    assert added["requires_token"] is True
+    assert "evil.example" not in added["endpoint"]
+    assert McpCatalog(path).get("local-only") is None
+
+
+def test_catalog_refresh_route_reports_a_directory_refusal(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "app.main.refresh_catalog",
+        lambda path: {"added": 0, "directory_available": False, "message": "Le répertoire n’a pas répondu. La liste actuelle est conservée."},
+    )
+    settings = Settings(
+        database_path=tmp_path / "refresh-api.sqlite3", openai_api_key="", openai_model="",
+        connector_token_encryption_key=Fernet.generate_key().decode(), mcp_catalog_path=tmp_path / "refresh-catalog.sqlite3",
+    )
+    with TestClient(create_app(settings)) as client:
+        anonymous = client.post("/api/connectors/mcp/catalog/refresh")
+        client.post("/api/auth/register", json={"name": "Refresh", "email": "refresh@example.com", "password": "refresh test password long"})
+        response = client.post("/api/connectors/mcp/catalog/refresh")
+    assert anonymous.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["directory_available"] is False
+    assert response.json()["added"] == 0
+
+
+def test_catalog_parser_keeps_public_metadata_only():
+    entries = {entry["id"]: entry for entry in parse_listing_html(LISTING_HTML)}
+    assert set(entries["docs-search"]) == {"id", "name", "description", "category", "source_url", "badges"}
+    assert entries["docs-search"]["source_url"] == "https://mcpservers.org/fr/servers/docs-search"
+    assert "evil.example" not in entries["docs-search"]["source_url"]
+    assert entries["docs-search"]["badges"] == ["officiel"]
+    sponsor = next(entry for entry in entries.values() if entry["name"] == "Alpha")
+    assert sponsor["source_url"] == "https://sponsor.example/go"
+    assert "?" not in sponsor["source_url"]
+
+
+LISTING_REFRESH = """
+<a href="/fr/servers/docs-search">
+  <div data-slot="card"><div data-slot="card-title">Docs Search</div><div>Recherche</div>
+  <div data-slot="card-description">documentation</div></div></a>
+<a href="/fr/servers/paid-api">
+  <div data-slot="card"><div data-slot="card-title">Paid API</div><div>Recherche</div>
+  <div data-slot="card-description">API distante https://evil.example/mcp</div></div></a>
+<a href="/fr/servers/local-only">
+  <div data-slot="card"><div data-slot="card-title">Local Only</div><div>Recherche</div>
+  <div data-slot="card-description">npx local-mcp</div></div></a>
+"""
+
+
+def test_catalog_activation_requires_a_token_only_when_the_fiche_says_so(tmp_path):
+    catalog_path = tmp_path / "token-catalog.sqlite3"
+    paid = qualify_listing_entry({
+        "id": "paid-api", "name": "Paid API", "description": "API distante", "category": "Recherche",
+        "source_url": "https://mcpservers.org/fr/servers/paid-api", "badges": [],
+    }, HOSTED_TOKEN)
+    write_catalog(catalog_path, [paid])
+    settings = Settings(
+        database_path=tmp_path / "token-api.sqlite3", openai_api_key="", openai_model="",
+        connector_token_encryption_key=Fernet.generate_key().decode(), mcp_catalog_path=catalog_path,
+    )
+    with TestClient(create_app(settings)) as client:
+        client.post("/api/auth/register", json={"name": "Token", "email": "token@example.com", "password": "token test password long"})
+        missing_token = client.post("/api/connectors/mcp", json={"name": "Paid", "url": "https://9.9.9.9/mcp", "catalog_id": "paid-api"})
+        with_token = client.post("/api/connectors/mcp", json={
+            "name": "Paid", "url": "https://9.9.9.9/mcp", "catalog_id": "paid-api", "auth_token": "sensitive-token-value",
+        })
+        owner_id = client.app.state.database.get_user_by_email("token@example.com")["id"]
+        stored_token = client.app.state.database.get_mcp_server(owner_id, with_token.json()["id"])
+    assert missing_token.status_code == 422
+    assert with_token.status_code == 201
+    assert with_token.json()["url"] == "https://8.8.4.4/mcp"
+    assert "sensitive-token-value" not in with_token.text
+    assert stored_token["encrypted_auth_token"]
+    assert "sensitive-token-value" not in stored_token["encrypted_auth_token"]
+
+
+def test_conversation_activation_selects_the_server_without_leaving_the_account(tmp_path, monkeypatch):
+    catalog_path = tmp_path / "conversation-catalog.sqlite3"
+    listing = {entry["id"]: entry for entry in parse_listing_html(LISTING_HTML)}
+    published = qualify_listing_entry(listing["docs-search"], HOSTED_PUBLIC)
+    paid = qualify_listing_entry({
+        "id": "paid-api", "name": "Paid API", "description": "API distante", "category": "Recherche",
+        "source_url": "https://mcpservers.org/fr/servers/paid-api", "badges": [],
+    }, HOSTED_TOKEN)
+    write_catalog(catalog_path, [published, paid])
+    settings = Settings(
+        database_path=tmp_path / "conversation-mcp.sqlite3", openai_api_key="test-key", openai_model="test-model",
+        connector_token_encryption_key=Fernet.generate_key().decode(), mcp_catalog_path=catalog_path,
+    )
+    tools = [
+        SimpleNamespace(name="snapshot", description="Read chain data", input_schema={"type": "object"}, annotations=None),
+        SimpleNamespace(name="wipe", description="Erase", input_schema={"type": "object"}, annotations=SimpleNamespace(destructiveHint=True)),
+    ]
+
+    async def fake_discover(self, row):
+        return tools
+
+    monkeypatch.setattr(McpRuntime, "_discover_tools", fake_discover)
+    with TestClient(create_app(settings)) as client:
+        client.post("/api/auth/register", json={"name": "Chat", "email": "chat-mcp@example.com", "password": "chat mcp password long"})
+        conversation = client.post("/api/conversations", json={}).json()
+        missing_token = client.post(f"/api/conversations/{conversation['id']}/mcp", json={"catalog_id": "paid-api"})
+        activated = client.post(f"/api/conversations/{conversation['id']}/mcp", json={"catalog_id": "docs-search"})
+        repeated = client.post(f"/api/conversations/{conversation['id']}/mcp", json={"catalog_id": "docs-search"})
+        unknown = client.post(f"/api/conversations/{conversation['id']}/mcp", json={"catalog_id": "missing"})
+
+        async def fail_route(*_args, **_kwargs):
+            raise AssertionError("planner should stay unused")
+
+        seen: dict[str, object] = {}
+
+        async def fake_stream(*args, **_kwargs):
+            seen["servers"] = args[5]
+            yield "Solde lu."
+
+        @asynccontextmanager
+        async def fake_open(self, user_id, server_ids, *, conversation_id, agent_profile_id=None):
+            yield [SimpleNamespace(name="docs")]
+
+        monkeypatch.setattr(client.app.state.request_router, "route", fail_route)
+        monkeypatch.setattr("app.main.stream_assistant", fake_stream)
+        monkeypatch.setattr(McpRuntime, "open_approved_servers", fake_open)
+        connector_ids = activated.json()["connector_ids"]
+        answered = client.post(
+            f"/api/conversations/{conversation['id']}/messages/stream",
+            json={"content": "Réponds avec les outils.", "connector_ids": connector_ids, "use_connected_tools": True},
+        )
+        preferences = client.get(f"/api/conversations/{conversation['id']}/connectors")
+
+    assert missing_token.status_code == 422
+    assert missing_token.json()["detail"] == "Ce serveur MCP demande un jeton utilisateur."
+    assert activated.status_code == 200
+    body = activated.json()
+    assert body["server"]["enabled"] is True
+    assert body["server"]["approved_tool_names"] == ["snapshot"]
+    assert body["server"]["catalog_id"] == "docs-search"
+    assert body["connector_ids"] == [f"mcp:{body['server']['id']}"]
+    assert "auth_token" not in activated.text
+    assert repeated.json()["connector_ids"] == body["connector_ids"]
+    assert unknown.status_code == 404
+    assert preferences.json()["connector_ids"] == body["connector_ids"]
+    assert answered.status_code == 200
+    assert "event: plan.ready" not in answered.text
+    assert "Solde lu." in answered.text
+    assert seen["servers"]
+
+
+def test_catalog_search_suggestions_and_activation_stay_local(tmp_path):
+    catalog_path = tmp_path / "catalog.sqlite3"
+    listing = {entry["id"]: entry for entry in parse_listing_html(LISTING_HTML)}
+    published = qualify_listing_entry(listing["docs-search"], HOSTED_PUBLIC)
+    paid = qualify_listing_entry({
+        "id": "paid-api", "name": "Paid API", "description": "API distante", "category": "Recherche",
+        "source_url": "https://mcpservers.org/fr/servers/paid-api", "badges": [],
+    }, HOSTED_TOKEN)
+    write_catalog(catalog_path, [published, paid, listing["docs-search"]])
+    settings = Settings(
+        database_path=tmp_path / "catalog-api.sqlite3", openai_api_key="", openai_model="",
+        connector_token_encryption_key=Fernet.generate_key().decode(), mcp_catalog_path=catalog_path,
+    )
+    with TestClient(create_app(settings)) as client:
+        client.post("/api/auth/register", json={"name": "Catalog", "email": "catalog@example.com", "password": "catalog test password long"})
+        page = client.get("/api/connectors/mcp/catalog", params={"q": "documentation", "category": "Recherche"})
+        suggestions = client.post("/api/connectors/mcp/suggestions", json={"content": "Je cherche de la documentation"})
+        missing = client.post("/api/connectors/mcp", json={"name": "X", "url": "https://8.8.8.8/mcp", "catalog_id": "missing"})
+        local = client.post("/api/connectors/mcp", json={"name": "Local", "url": "http://127.0.0.1:8765/mcp"})
+        created = client.post("/api/connectors/mcp", json={
+            "name": "Ignored", "url": "https://8.8.8.8/mcp", "catalog_id": "docs-search", "auth_token": "sensitive-token-value",
+        })
+        owner_id = client.app.state.database.get_user_by_email("catalog@example.com")["id"]
+        ignored_token = client.app.state.database.get_mcp_server(owner_id, created.json()["id"])
+        too_early = client.patch(f"/api/connectors/mcp/{created.json()['id']}", json={"enabled": True})
+        user_id = client.app.state.database.get_user_by_email("catalog@example.com")["id"]
+        client.app.state.database.update_mcp_server_tools(user_id, created.json()["id"], [
+            {"name": "search_docs", "description": "Search", "access": "read"},
+            {"name": "delete_docs", "description": "Delete", "access": "write"},
+        ])
+        client.put(f"/api/connectors/mcp/{created.json()['id']}/tools", json={"tool_names": ["search_docs"]})
+        enabled = client.patch(f"/api/connectors/mcp/{created.json()['id']}", json={"enabled": True})
+        disabled = client.patch(f"/api/connectors/mcp/{created.json()['id']}", json={"enabled": False})
+        profile = client.post("/api/agents", json={
+            "name": "Docs", "domain": "wellness", "description": "Docs", "instructions": "Lis la documentation.",
+            "capability_ids": ["wellness_planning"],
+        })
+        granted = client.put(f"/api/agents/{profile.json()['id']}/mcp-tools", json={
+            "tools": [{"server_id": created.json()["id"], "tool_name": "search_docs"}],
+        })
+        refused = client.put(f"/api/agents/{profile.json()['id']}/mcp-tools", json={
+            "tools": [{"server_id": created.json()["id"], "tool_name": "delete_docs"}],
+        })
+
+    body = page.json()
+    assert page.status_code == 200
+    assert body["total"] == 1
+    assert body["items"][0]["id"] == "docs-search"
+    assert body["items"][0]["endpoint"] == "https://1.1.1.1/mcp"
+    assert body["items"][0]["requires_token"] is False
+    assert "evil.example" not in body["items"][0]["endpoint"]
+    assert suggestions.status_code == 200
+    assert suggestions.json()["suggestions"] == [{"id": "docs-search", "name": "Docs Search", "category": "Recherche"}]
+    assert "sensitive-token-value" not in suggestions.text
+    assert missing.status_code == 404
+    assert local.status_code == 422
+    assert created.status_code == 201
+    assert created.json()["name"] == "Docs Search"
+    assert created.json()["url"] == "https://1.1.1.1/mcp"
+    assert created.json()["enabled"] is False
+    assert ignored_token["encrypted_auth_token"] is None
+    assert "sensitive-token-value" not in created.text
+    assert too_early.status_code == 409
+    assert enabled.status_code == 200 and enabled.json()["enabled"] is True
+    assert disabled.status_code == 200 and disabled.json()["enabled"] is False
+    assert granted.status_code == 200
+    assert granted.json()["tools"] == [{"server_id": created.json()["id"], "tool_name": "search_docs"}]
+    assert refused.status_code == 422
 
 
 def test_connector_preferences_are_scoped_to_conversation_and_survive_reads(tmp_path):
@@ -749,3 +1052,66 @@ def test_calendar_oauth_connect_and_disconnect_require_a_session(tmp_path):
     with TestClient(create_app(settings)) as client:
         assert client.post("/api/connectors/google_calendar/connect").status_code == 401
         assert client.post("/api/connectors/google_calendar/disconnect").status_code == 401
+
+
+def test_activation_refusal_returns_a_connection_link_or_a_token_request(tmp_path, monkeypatch):
+    catalog_path = tmp_path / "access-catalog.sqlite3"
+    published = qualify_listing_entry(parse_listing_html(LISTING_HTML)[0], HOSTED_PUBLIC)
+    write_catalog(catalog_path, [published])
+    key = Fernet.generate_key().decode()
+    settings = Settings(
+        database_path=tmp_path / "access-api.sqlite3", openai_api_key="", openai_model="",
+        connector_token_encryption_key=key, mcp_catalog_path=catalog_path,
+    )
+
+    async def denied(self, row):
+        raise ExceptionGroup("unhandled errors in a TaskGroup", [RuntimeError("Missing Authorization")])
+
+    answer = {"value": ("https://8.8.8.8/mcp-server", False)}
+
+    async def probe(endpoint, *, allow_loopback):
+        return answer["value"]
+
+    monkeypatch.setattr(McpRuntime, "_discover_tools", denied)
+    with TestClient(create_app(settings)) as client:
+        client.app.state.mcp_runtime.access_probe = probe
+        client.post("/api/auth/register", json={"name": "Access", "email": "access@example.com", "password": "access test password long"})
+        conversation = client.post("/api/conversations", json={}).json()
+        linked = client.post(f"/api/conversations/{conversation['id']}/mcp", json={"catalog_id": "docs-search"})
+        ignored = client.post(
+            f"/api/conversations/{conversation['id']}/mcp",
+            json={"catalog_id": "docs-search", "auth_token": "user-secret"},
+        )
+        answer["value"] = (None, True)
+        token_needed = client.post(f"/api/conversations/{conversation['id']}/mcp", json={"catalog_id": "docs-search"})
+        saved = client.post(
+            f"/api/conversations/{conversation['id']}/mcp",
+            json={"catalog_id": "docs-search", "auth_token": "user-secret"},
+        )
+        owner_id = client.app.state.database.get_user_by_email("access@example.com")["id"]
+        row = client.app.state.database.list_mcp_servers(owner_id)[-1]
+        created = client.post("/api/connectors/mcp", json={"name": "Open", "url": "https://9.9.9.9/mcp"})
+        replaced = client.put(
+            f"/api/connectors/mcp/{created.json()['id']}/credential",
+            json={"auth_token": "other-secret"},
+        )
+        replaced_row = client.app.state.database.get_mcp_server(owner_id, created.json()["id"])
+
+    assert linked.status_code == 422
+    assert linked.json()["detail"] == {
+        "message": "Ce serveur MCP demande une connexion au compte de l’éditeur.",
+        "connect_url": "https://8.8.8.8/mcp-server",
+    }
+    assert ignored.status_code == 422
+    assert "user-secret" not in ignored.text
+    assert token_needed.json()["detail"] == {
+        "message": "Ce serveur MCP demande un jeton utilisateur.",
+        "needs_token": True,
+    }
+    assert saved.status_code == 422
+    assert "user-secret" not in saved.text
+    assert TokenVault(key).decrypt_payload(row["encrypted_auth_token"]) == {"auth_token": "user-secret"}
+    assert created.status_code == 201
+    assert replaced.status_code == 200
+    assert "other-secret" not in replaced.text
+    assert TokenVault(key).decrypt_payload(replaced_row["encrypted_auth_token"]) == {"auth_token": "other-secret"}

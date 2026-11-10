@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.agents.models import AgentCapability, AgentProfileCreate, AgentProfileRead, AgentProfileUpdate
 
 
@@ -62,6 +62,12 @@ class AuthLogin(BaseModel):
         return value
 
 
+class AuthAccountDelete(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class AuthUserRead(BaseModel):
     id: str
     email: str
@@ -88,8 +94,10 @@ class ConversationRead(BaseModel):
 
 
 class MessageCreate(BaseModel):
-    content: str = Field(min_length=1, max_length=12_000)
+    content: str = Field(default="", max_length=12_000)
     connector_ids: list[str] = Field(default_factory=list, max_length=5)
+    use_connected_tools: bool = False
+    resume_with_tools: bool = False
 
     @field_validator("connector_ids")
     @classmethod
@@ -97,6 +105,12 @@ class MessageCreate(BaseModel):
         if len(set(connector_ids)) != len(connector_ids):
             raise ValueError("connector_ids must not contain duplicates")
         return connector_ids
+
+    @model_validator(mode="after")
+    def content_required_for_a_new_turn(self) -> "MessageCreate":
+        if not self.resume_with_tools and not self.content.strip():
+            raise ValueError("content is required")
+        return self
 
 
 class ConnectorPermissionRead(BaseModel):
@@ -144,6 +158,13 @@ class ConnectorPreferencesRead(BaseModel):
     connectors: list[ConnectorRead]
 
 
+class McpActivityRead(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    server: str = Field(min_length=1, max_length=80)
+    tool: str = Field(min_length=1, max_length=80)
+    status: Literal["running", "done", "failed"]
+
+
 class MessageRead(BaseModel):
     id: str
     conversation_id: str
@@ -151,6 +172,7 @@ class MessageRead(BaseModel):
     content: str
     created_at: datetime
     execution_id: str | None = None
+    mcp_activity: list[McpActivityRead] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

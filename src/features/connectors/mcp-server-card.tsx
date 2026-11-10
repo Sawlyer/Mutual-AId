@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, type FormEvent } from 'react'
 import { AlertCircle, Check, Clock3, LoaderCircle, RefreshCw, Save, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { chatAdapter, type McpServerRecord } from '@/services/chat-adapters'
+import { Input } from '@/components/ui/input'
+import { ChatServiceError, chatAdapter, type McpServerRecord } from '@/services/chat-adapters'
 
 interface McpServerCardProps {
   server: McpServerRecord
@@ -15,8 +16,11 @@ const statusLabel: Record<McpServerRecord['status'], string> = { not_checked: '�
 export function McpServerCard({ server, onChange, onDelete }: McpServerCardProps) {
   const [pendingTools, setPendingTools] = useState<string[] | null>(null)
   const selectedTools = pendingTools ?? server.approved_tool_names
-  const [busy, setBusy] = useState<'refresh' | 'save' | 'delete' | null>(null)
+  const [busy, setBusy] = useState<'refresh' | 'save' | 'delete' | 'enabled' | 'token' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [connectUrl, setConnectUrl] = useState<string | null>(null)
+  const [needsToken, setNeedsToken] = useState(false)
+  const [token, setToken] = useState('')
   const dirty = selectedTools.length !== server.approved_tool_names.length || selectedTools.some((name) => !server.approved_tool_names.includes(name))
   const statusTone = server.status === 'ready' ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300'
     : server.status === 'error' ? 'border-destructive/20 bg-destructive/5 text-destructive' : 'border-border bg-muted/40 text-muted-foreground'
@@ -24,9 +28,26 @@ export function McpServerCard({ server, onChange, onDelete }: McpServerCardProps
   async function refresh() {
     setBusy('refresh')
     setError(null)
-    try { const updated = await chatAdapter.refreshMcpServer(server.id); setPendingTools(null); onChange(updated) }
+    try {
+      const updated = await chatAdapter.refreshMcpServer(server.id)
+      setPendingTools(null)
+      setConnectUrl(null)
+      setNeedsToken(false)
+      onChange(updated)
+    }
     catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'La connexion au serveur a échoué.')
+      if (reason instanceof ChatServiceError && reason.connectUrl) {
+        setConnectUrl(reason.connectUrl)
+        setNeedsToken(false)
+        setError(reason.message)
+      } else if (reason instanceof ChatServiceError && reason.needsToken) {
+        setConnectUrl(null)
+        setNeedsToken(true)
+        setError(reason.message)
+      } else {
+        setConnectUrl(null)
+        setError(reason instanceof Error ? reason.message : 'La connexion au serveur a échoué.')
+      }
       try {
         const servers = await chatAdapter.listMcpServers()
         const latest = servers.find((item) => item.id === server.id)
@@ -43,6 +64,33 @@ export function McpServerCard({ server, onChange, onDelete }: McpServerCardProps
     finally { setBusy(null) }
   }
 
+  async function toggleEnabled() {
+    setBusy('enabled')
+    setError(null)
+    try { onChange(await chatAdapter.setMcpServerEnabled(server.id, !server.enabled)) }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Le serveur n’a pas pu changer d’état.') }
+    finally { setBusy(null) }
+  }
+
+  async function saveToken(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!token.trim()) {
+      setError('Ce serveur MCP demande un jeton utilisateur.')
+      return
+    }
+    setBusy('token')
+    setError(null)
+    try {
+      onChange(await chatAdapter.replaceMcpCredential(server.id, token.trim()))
+      setToken('')
+      setNeedsToken(false)
+      await refresh()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Le jeton n’a pas pu être enregistré.')
+      setBusy(null)
+    }
+  }
+
   async function removeServer() {
     if (!window.confirm(`Supprimer le serveur MCP « ${server.name} » et ses autorisations ?`)) return
     setBusy('delete')
@@ -56,12 +104,12 @@ export function McpServerCard({ server, onChange, onDelete }: McpServerCardProps
     <CardContent className="space-y-4 p-4 sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="truncate text-sm font-semibold">{server.name}</h3>
+          <div className="flex flex-wrap items-center gap-2"><h3 className="truncate text-sm font-semibold">{server.name}</h3>{server.enabled && <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300"><span className="size-1.5 rounded-full bg-emerald-500" aria-hidden="true" />Activé</span>}</div>
           <p className="mt-1 break-all text-[11px] leading-relaxed text-muted-foreground">{server.url}</p>
         </div>
         <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] font-medium ${statusTone}`}>
           {server.status === 'ready' ? <Check aria-hidden="true" className="size-3" /> : server.status === 'error' ? <AlertCircle aria-hidden="true" className="size-3" /> : <Clock3 aria-hidden="true" className="size-3" />}
-          {statusLabel[server.status]}
+          {statusLabel[server.status]}{server.enabled ? '' : ' · désactivé'}
         </span>
       </div>
 
@@ -78,7 +126,7 @@ export function McpServerCard({ server, onChange, onDelete }: McpServerCardProps
               <label className={`flex gap-2.5 rounded-lg border px-3 py-2.5 ${readOnly ? 'cursor-pointer border-border/70 hover:bg-muted/30' : 'cursor-not-allowed border-border/50 bg-muted/20 opacity-70'}`}>
                 <input type="checkbox" checked={checked} disabled={!readOnly || busy !== null} onChange={(event) => setPendingTools(event.target.checked ? [...selectedTools, tool.name] : selectedTools.filter((name) => name !== tool.name))} aria-label={`Autoriser l’outil ${tool.name}`} className="mt-0.5 accent-primary" />
                 <span className="min-w-0 flex-1">
-                  <span className="flex flex-wrap items-center gap-2 text-xs font-medium">{tool.name}<span className={`rounded px-1.5 py-0.5 text-[9px] uppercase ${readOnly ? 'bg-blue-500/10 text-blue-700 dark:text-blue-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>{readOnly ? 'lecture' : 'bloqué · écriture ou non vérifié'}</span></span>
+                  <span className="flex flex-wrap items-center gap-2 text-xs font-medium">{tool.name}<span className={`rounded px-1.5 py-0.5 text-[9px] uppercase ${readOnly ? 'bg-blue-500/10 text-blue-700 dark:text-blue-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>{readOnly ? 'lecture' : 'approbation requise'}</span></span>
                   {tool.description && <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">{tool.description}</span>}
                 </span>
               </label>
@@ -88,12 +136,22 @@ export function McpServerCard({ server, onChange, onDelete }: McpServerCardProps
       </div>
 
       {server.last_error && <p role="status" className="rounded-lg border border-destructive/15 bg-destructive/5 px-3 py-2 text-xs text-destructive">{server.last_error}</p>}
+      {connectUrl && <a href={connectUrl} target="_blank" rel="noreferrer" className="text-xs text-primary underline underline-offset-4">Ouvrir la page de connexion</a>}
+      {needsToken && <form className="space-y-2" onSubmit={(event) => void saveToken(event)}>
+        <Input type="password" autoComplete="off" value={token} placeholder="Jeton utilisateur" aria-label={`Jeton pour ${server.name}`} onChange={(event) => setToken(event.target.value)} />
+        <Button type="submit" size="sm" disabled={busy !== null}>{busy === 'token' ? 'Enregistrement…' : 'Enregistrer le jeton'}</Button>
+      </form>}
       {server.last_checked_at && <p className="text-[10px] text-muted-foreground">Dernière vérification : {new Date(server.last_checked_at).toLocaleString('fr-FR')}</p>}
-      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+      {error && error !== server.last_error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
-        <Button type="button" variant="ghost" size="sm" disabled={busy !== null} onClick={() => void removeServer()} className="text-muted-foreground hover:text-destructive">
-          {busy === 'delete' ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> : <Trash2 aria-hidden="true" className="size-3.5" />}Supprimer
-        </Button>
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" size="sm" disabled={busy !== null} onClick={() => void toggleEnabled()}>
+            {busy === 'enabled' ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> : null}{server.enabled ? 'Désactiver' : 'Activer'}
+          </Button>
+          <Button type="button" variant="ghost" size="sm" disabled={busy !== null} onClick={() => void removeServer()} className="text-muted-foreground hover:text-destructive">
+            {busy === 'delete' ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> : <Trash2 aria-hidden="true" className="size-3.5" />}Supprimer
+          </Button>
+        </div>
         <div className="flex gap-2">
           <Button type="button" variant="outline" size="sm" disabled={busy !== null} onClick={() => void refresh()}>
             {busy === 'refresh' ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> : <RefreshCw aria-hidden="true" className="size-3.5" />}Tester

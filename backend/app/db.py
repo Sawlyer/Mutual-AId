@@ -6,11 +6,37 @@ from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
 
-from app.schemas import AuthUserRead, ConversationRead, MessageRead
+from pydantic import ValidationError
+
+from app.schemas import AuthUserRead, ConversationRead, McpActivityRead, MessageRead
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _message_from_row(row: sqlite3.Row) -> MessageRead:
+    data = dict(row)
+    raw_activity = data.pop("mcp_activity_json", None)
+    return MessageRead(**data, mcp_activity=_load_mcp_activity(raw_activity))
+
+
+def _load_mcp_activity(raw: object) -> list[McpActivityRead]:
+    if not isinstance(raw, str) or not raw.strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    activity: list[McpActivityRead] = []
+    for entry in parsed[:20]:
+        try:
+            activity.append(McpActivityRead.model_validate(entry))
+        except ValidationError:
+            continue
+    return activity
 
 
 class Database:
@@ -52,7 +78,8 @@ class Database:
                     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    execution_id TEXT
+                    execution_id TEXT,
+                    mcp_activity_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS messages_conversation_order
                     ON messages(conversation_id, created_at, id);
@@ -108,6 +135,8 @@ class Database:
                     url TEXT NOT NULL,
                     encrypted_auth_token TEXT,
                     status TEXT NOT NULL DEFAULT 'not_checked' CHECK (status IN ('not_checked', 'ready', 'error')),
+                    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+                    catalog_id TEXT,
                     discovered_tools_json TEXT NOT NULL DEFAULT '[]',
                     approved_tools_json TEXT NOT NULL DEFAULT '[]',
                     last_checked_at TEXT,
@@ -116,6 +145,13 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS mcp_servers_user_created ON mcp_servers(user_id, created_at);
+                CREATE TABLE IF NOT EXISTS agent_profile_mcp_tools (
+                    user_id TEXT NOT NULL,
+                    profile_id TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    PRIMARY KEY (user_id, profile_id, server_id, tool_name)
+                );
                 CREATE TABLE IF NOT EXISTS agent_profiles (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -199,7 +235,9 @@ class Database:
                     execution_id TEXT NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
                     user_id TEXT NOT NULL,
                     task_id TEXT,
+                    agent_id TEXT,
                     event_type TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'unknown',
                     message TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
@@ -214,6 +252,7 @@ class Database:
                     finished_at TEXT,
                     error TEXT
                 );
+                CREATE INDEX IF NOT EXISTS execution_attempts_task ON execution_attempts(execution_id, task_id, attempt_number);
                 CREATE TABLE IF NOT EXISTS execution_approvals (
                     id TEXT PRIMARY KEY,
                     execution_id TEXT NOT NULL,
@@ -244,6 +283,7 @@ class Database:
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS execution_artifacts_cursor ON execution_artifacts(user_id, execution_id, created_at);
                 CREATE TABLE IF NOT EXISTS execution_final_messages (
                     execution_id TEXT PRIMARY KEY REFERENCES executions(id) ON DELETE CASCADE,
                     user_id TEXT NOT NULL,
@@ -256,6 +296,8 @@ class Database:
             message_columns = {row["name"] for row in connection.execute("PRAGMA table_info(messages)")}
             if "execution_id" not in message_columns:
                 connection.execute("ALTER TABLE messages ADD COLUMN execution_id TEXT")
+            if "mcp_activity_json" not in message_columns:
+                connection.execute("ALTER TABLE messages ADD COLUMN mcp_activity_json TEXT")
             if "owner_id" not in conversation_columns:
                 connection.execute("ALTER TABLE conversations ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'local-user'")
             task_columns = {row["name"] for row in connection.execute("PRAGMA table_info(execution_tasks)")}
@@ -263,9 +305,57 @@ class Database:
                 connection.execute("ALTER TABLE execution_tasks ADD COLUMN agent_profile_snapshot_json TEXT")
             if "approval_id" not in task_columns:
                 connection.execute("ALTER TABLE execution_tasks ADD COLUMN approval_id TEXT")
+            event_columns = {row["name"] for row in connection.execute("PRAGMA table_info(execution_events)")}
+            if "agent_id" not in event_columns:
+                connection.execute("ALTER TABLE execution_events ADD COLUMN agent_id TEXT")
+            if "status" not in event_columns:
+                connection.execute("ALTER TABLE execution_events ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
+            agent_skill_columns = {row["name"] for row in connection.execute("PRAGMA table_info(agent_skills)")}
+            if "catalog_id" not in agent_skill_columns:
+                connection.execute("ALTER TABLE agent_skills ADD COLUMN catalog_id TEXT")
+            if "source" not in agent_skill_columns:
+                connection.execute("ALTER TABLE agent_skills ADD COLUMN source TEXT NOT NULL DEFAULT 'user'")
+            if "catalog_version" not in agent_skill_columns:
+                connection.execute("ALTER TABLE agent_skills ADD COLUMN catalog_version INTEGER")
+            if "catalog_snapshot_json" not in agent_skill_columns:
+                connection.execute("ALTER TABLE agent_skills ADD COLUMN catalog_snapshot_json TEXT")
+            if "review_status" not in agent_skill_columns:
+                connection.execute("ALTER TABLE agent_skills ADD COLUMN review_status TEXT NOT NULL DEFAULT 'approved'")
+            if "generated_by" not in agent_skill_columns:
+                connection.execute("ALTER TABLE agent_skills ADD COLUMN generated_by TEXT")
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS agent_skill_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    skill_id TEXT NOT NULL,
+                    profile_id TEXT,
+                    action TEXT NOT NULL,
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                )"""
+            )
+            connection.execute("CREATE INDEX IF NOT EXISTS agent_skill_audit_user_created ON agent_skill_audit(user_id, created_at DESC)")
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS agent_skills_catalog_owner "
+                "ON agent_skills(user_id, catalog_id) WHERE catalog_id IS NOT NULL"
+            )
             oauth_state_columns = {row["name"] for row in connection.execute("PRAGMA table_info(connector_oauth_states)")}
             if "connector_id" not in oauth_state_columns:
                 connection.execute("ALTER TABLE connector_oauth_states ADD COLUMN connector_id TEXT NOT NULL DEFAULT 'google_calendar'")
+            mcp_columns = {row["name"] for row in connection.execute("PRAGMA table_info(mcp_servers)")}
+            if "enabled" not in mcp_columns:
+                connection.execute("ALTER TABLE mcp_servers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0")
+            if "catalog_id" not in mcp_columns:
+                connection.execute("ALTER TABLE mcp_servers ADD COLUMN catalog_id TEXT")
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS agent_profile_mcp_tools (
+                    user_id TEXT NOT NULL,
+                    profile_id TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    PRIMARY KEY (user_id, profile_id, server_id, tool_name)
+                )"""
+            )
 
     @staticmethod
     def _agent_profile(row: sqlite3.Row | None) -> dict[str, object] | None:
@@ -329,6 +419,10 @@ class Database:
 
     def delete_agent_profile(self, user_id: str, profile_id: str) -> bool:
         with self.connection() as connection:
+            connection.execute(
+                "DELETE FROM agent_profile_mcp_tools WHERE user_id = ? AND profile_id = ?",
+                (user_id, profile_id),
+            )
             cursor = connection.execute("DELETE FROM agent_profiles WHERE user_id = ? AND id = ?", (user_id, profile_id))
         return cursor.rowcount > 0
 
@@ -338,14 +432,22 @@ class Database:
             return None
         skill = dict(row)
         skill["enabled"] = bool(skill["enabled"])
+        snapshot_json = skill.pop("catalog_snapshot_json", None)
+        skill["catalog_snapshot"] = json.loads(snapshot_json) if snapshot_json else None
         return skill
 
     def create_agent_skill(self, user_id: str, skill_id: str, skill_data: dict[str, object]) -> dict[str, object]:
         timestamp = utc_now()
         with self.connection() as connection:
             connection.execute(
-                "INSERT INTO agent_skills (id, user_id, name, description, instructions, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (skill_id, user_id, skill_data["name"], skill_data.get("description", ""), skill_data["instructions"], int(bool(skill_data.get("enabled", True))), timestamp, timestamp),
+                """INSERT INTO agent_skills
+                   (id, user_id, name, description, instructions, enabled, source, catalog_id, catalog_version,
+                    catalog_snapshot_json, review_status, generated_by, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (skill_id, user_id, skill_data["name"], skill_data.get("description", ""), skill_data["instructions"],
+                 int(bool(skill_data.get("enabled", True))), skill_data.get("source", "user"), skill_data.get("catalog_id"),
+                 skill_data.get("catalog_version"), json.dumps(skill_data["catalog_snapshot"]) if skill_data.get("catalog_snapshot") else None,
+                 skill_data.get("review_status", "approved"), skill_data.get("generated_by"), timestamp, timestamp),
             )
             row = connection.execute("SELECT * FROM agent_skills WHERE user_id = ? AND id = ?", (user_id, skill_id)).fetchone()
         result = self._agent_skill(row)
@@ -378,8 +480,16 @@ class Database:
                 ).fetchone()
         return self._agent_skill(row)
 
+    def list_agent_skill_assignments(self, user_id: str, skill_id: str) -> list[str]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT profile_id FROM agent_profile_skills WHERE user_id = ? AND skill_id = ? ORDER BY profile_id",
+                (user_id, skill_id),
+            ).fetchall()
+        return [str(row["profile_id"]) for row in rows]
+
     def update_agent_skill(self, user_id: str, skill_id: str, skill_data: dict[str, object]) -> dict[str, object] | None:
-        allowed = {"name", "description", "instructions", "enabled"}
+        allowed = {"name", "description", "instructions", "enabled", "catalog_version", "catalog_snapshot", "review_status"}
         changes = {key: value for key, value in skill_data.items() if key in allowed}
         if not changes:
             return self.get_agent_skill(user_id, skill_id)
@@ -387,12 +497,28 @@ class Database:
         values: list[object] = []
         for key, value in changes.items():
             assignments.append(f"{key} = ?")
-            values.append(int(value) if key == "enabled" else value)
+            values.append(int(value) if key == "enabled" else json.dumps(value) if key == "catalog_snapshot" else value)
+            if key == "catalog_snapshot":
+                assignments[-1] = "catalog_snapshot_json = ?"
         assignments.append("updated_at = ?")
         values.extend((utc_now(), user_id, skill_id))
         with self.connection() as connection:
             connection.execute(f"UPDATE agent_skills SET {', '.join(assignments)} WHERE user_id = ? AND id = ?", values)
         return self.get_agent_skill(user_id, skill_id)
+
+    def audit_agent_skill(self, user_id: str, skill_id: str, action: str, profile_id: str | None = None, details: dict[str, object] | None = None) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO agent_skill_audit (user_id, skill_id, profile_id, action, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, skill_id, profile_id, action, json.dumps(details or {}), utc_now()),
+            )
+
+    def list_agent_skill_audit(self, user_id: str, limit: int = 100) -> list[dict[str, object]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM agent_skill_audit WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, min(max(limit, 1), 200))
+            ).fetchall()
+        return [{**dict(row), "details": json.loads(row["details_json"])} for row in rows]
 
     def delete_agent_skill(self, user_id: str, skill_id: str) -> bool:
         with self.connection() as connection:
@@ -414,11 +540,31 @@ class Database:
                 ).fetchall()
                 if {row["id"] for row in rows} != set(skill_ids):
                     return False
+                approved_rows = connection.execute(
+                    f"SELECT id FROM agent_skills WHERE user_id = ? AND review_status = 'approved' AND id IN ({marks})",
+                    (user_id, *skill_ids),
+                ).fetchall()
+                if {row["id"] for row in approved_rows} != set(skill_ids):
+                    return False
+            previous_rows = connection.execute(
+                "SELECT skill_id FROM agent_profile_skills WHERE user_id = ? AND profile_id = ?", (user_id, profile_id)
+            ).fetchall()
+            previous_ids = {row["skill_id"] for row in previous_rows}
             connection.execute("DELETE FROM agent_profile_skills WHERE user_id = ? AND profile_id = ?", (user_id, profile_id))
             connection.executemany(
                 "INSERT INTO agent_profile_skills (user_id, profile_id, skill_id, created_at) VALUES (?, ?, ?, ?)",
                 [(user_id, profile_id, skill_id, utc_now()) for skill_id in skill_ids],
             )
+            for skill_id in previous_ids - set(skill_ids):
+                connection.execute(
+                    "INSERT INTO agent_skill_audit (user_id, skill_id, profile_id, action, details_json, created_at) VALUES (?, ?, ?, 'unassigned', '{}', ?)",
+                    (user_id, skill_id, profile_id, utc_now()),
+                )
+            for skill_id in set(skill_ids) - previous_ids:
+                connection.execute(
+                    "INSERT INTO agent_skill_audit (user_id, skill_id, profile_id, action, details_json, created_at) VALUES (?, ?, ?, 'assigned', '{}', ?)",
+                    (user_id, skill_id, profile_id, utc_now()),
+                )
         return True
 
     def unassign_agent_skill(self, user_id: str, profile_id: str, skill_id: str) -> bool:
@@ -540,6 +686,53 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
+    def user_has_active_executions(self, user_id: str) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM executions WHERE user_id = ? AND status IN "
+                "('planning', 'running', 'pausing', 'awaiting_approval') LIMIT 1",
+                (user_id,),
+            ).fetchone()
+        return row is not None
+
+    def delete_user_account(self, user_id: str) -> str:
+        """Delete all data owned by a user, unless an execution is still active."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is None:
+                return "not_found"
+
+            active_execution = connection.execute(
+                "SELECT 1 FROM executions WHERE user_id = ? AND status IN "
+                "('planning', 'running', 'pausing', 'awaiting_approval') LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            if active_execution:
+                return "active_executions"
+
+            execution_ids = "SELECT id FROM executions WHERE user_id = ?"
+            connection.execute(f"DELETE FROM execution_final_messages WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_attempts WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_approvals WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_tool_calls WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_artifacts WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_events WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute(f"DELETE FROM execution_tasks WHERE execution_id IN ({execution_ids})", (user_id,))
+            connection.execute("DELETE FROM executions WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM conversation_connectors WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM conversations WHERE owner_id = ?", (user_id,))
+            connection.execute("DELETE FROM connector_oauth_states WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM connector_credentials WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM connector_connections WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM mcp_servers WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM agent_profile_skills WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM agent_skill_audit WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM auto_agent_capabilities WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM agent_skills WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM agent_profiles WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        return "deleted"
+
     def get_user(self, user_id: str) -> AuthUserRead | None:
         with self.connection() as connection:
             row = connection.execute(
@@ -606,11 +799,13 @@ class Database:
         with self.connection() as connection:
             connection.execute("DELETE FROM connector_credentials WHERE user_id = ? AND connector_id = ?", (user_id, connector_id))
 
-    def create_mcp_server(self, server_id: str, user_id: str, name: str, url: str, encrypted_auth_token: str | None) -> None:
+    def create_mcp_server(self, server_id: str, user_id: str, name: str, url: str, encrypted_auth_token: str | None, catalog_id: str | None = None) -> None:
         with self.connection() as connection:
             connection.execute(
-                "INSERT INTO mcp_servers (id, user_id, name, url, encrypted_auth_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (server_id, user_id, name, url, encrypted_auth_token, utc_now(), utc_now()),
+                """INSERT INTO mcp_servers
+                   (id, user_id, name, url, encrypted_auth_token, enabled, catalog_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+                (server_id, user_id, name, url, encrypted_auth_token, catalog_id, utc_now(), utc_now()),
             )
 
     def list_mcp_servers(self, user_id: str) -> list[dict[str, object]]:
@@ -622,6 +817,14 @@ class Database:
         with self.connection() as connection:
             row = connection.execute("SELECT * FROM mcp_servers WHERE user_id = ? AND id = ?", (user_id, server_id)).fetchone()
         return dict(row) if row else None
+
+    def set_mcp_server_auth_token(self, user_id: str, server_id: str, encrypted_auth_token: str) -> bool:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "UPDATE mcp_servers SET encrypted_auth_token = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (encrypted_auth_token, utc_now(), user_id, server_id),
+            )
+        return cursor.rowcount == 1
 
     def update_mcp_server_tools(self, user_id: str, server_id: str, tools: list[dict[str, object]], status: str = "ready", error: str | None = None) -> bool:
         with self.connection() as connection:
@@ -646,11 +849,53 @@ class Database:
             )
         return cursor.rowcount == 1
 
+    def set_mcp_server_enabled(self, user_id: str, server_id: str, enabled: bool) -> bool:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "UPDATE mcp_servers SET enabled = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (int(enabled), utc_now(), user_id, server_id),
+            )
+        return cursor.rowcount == 1
+
+    def list_agent_mcp_tools(self, user_id: str, profile_id: str) -> list[dict[str, str]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """SELECT server_id, tool_name FROM agent_profile_mcp_tools
+                   WHERE user_id = ? AND profile_id = ? ORDER BY server_id, tool_name""",
+                (user_id, profile_id),
+            ).fetchall()
+        return [{"server_id": row["server_id"], "tool_name": row["tool_name"]} for row in rows]
+
+    def replace_agent_mcp_tools(self, user_id: str, profile_id: str, tools: list[tuple[str, str]]) -> None:
+        unique = sorted(set(tools))
+        with self.connection() as connection:
+            connection.execute(
+                "DELETE FROM agent_profile_mcp_tools WHERE user_id = ? AND profile_id = ?",
+                (user_id, profile_id),
+            )
+            connection.executemany(
+                "INSERT INTO agent_profile_mcp_tools (user_id, profile_id, server_id, tool_name) VALUES (?, ?, ?, ?)",
+                [(user_id, profile_id, server_id, tool_name) for server_id, tool_name in unique],
+            )
+
+    def agent_has_mcp_tool(self, user_id: str, profile_id: str, server_id: str, tool_name: str) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(
+                """SELECT 1 FROM agent_profile_mcp_tools
+                   WHERE user_id = ? AND profile_id = ? AND server_id = ? AND tool_name = ?""",
+                (user_id, profile_id, server_id, tool_name),
+            ).fetchone()
+        return row is not None
+
     def delete_mcp_server(self, user_id: str, server_id: str) -> bool:
         with self.connection() as connection:
             connection.execute(
                 "DELETE FROM conversation_connectors WHERE user_id = ? AND connector_id = ?",
                 (user_id, f"mcp:{server_id}"),
+            )
+            connection.execute(
+                "DELETE FROM agent_profile_mcp_tools WHERE user_id = ? AND server_id = ?",
+                (user_id, server_id),
             )
             cursor = connection.execute("DELETE FROM mcp_servers WHERE user_id = ? AND id = ?", (user_id, server_id))
         return cursor.rowcount == 1
@@ -700,13 +945,22 @@ class Database:
             cursor = connection.execute("DELETE FROM conversations WHERE id = ? AND owner_id = ?", (conversation_id, owner_id))
         return cursor.rowcount > 0
 
-    def create_message(self, conversation_id: str, role: str, content: str, execution_id: str | None = None) -> MessageRead:
+    def create_message(
+        self, conversation_id: str, role: str, content: str, execution_id: str | None = None,
+        mcp_activity: list[McpActivityRead] | None = None,
+    ) -> MessageRead:
         message_id = str(uuid4())
         timestamp = utc_now()
+        activity = list(mcp_activity or [])
+        encoded = json.dumps(
+            [item.model_dump(mode="json") for item in activity], ensure_ascii=False, separators=(",", ":"),
+        ) if activity else None
         with self.connection() as connection:
             connection.execute(
-                "INSERT INTO messages (id, conversation_id, role, content, created_at, execution_id) VALUES (?, ?, ?, ?, ?, ?)",
-                (message_id, conversation_id, role, content, timestamp, execution_id),
+                """INSERT INTO messages
+                   (id, conversation_id, role, content, created_at, execution_id, mcp_activity_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (message_id, conversation_id, role, content, timestamp, execution_id, encoded),
             )
             connection.execute(
                 """UPDATE conversations SET updated_at = ?,
@@ -715,7 +969,10 @@ class Database:
                    WHERE id = ?""",
                 (timestamp, role, content.strip(), conversation_id),
             )
-        return MessageRead(id=message_id, conversation_id=conversation_id, role=role, content=content, created_at=timestamp, execution_id=execution_id)
+        return MessageRead(
+            id=message_id, conversation_id=conversation_id, role=role, content=content,
+            created_at=timestamp, execution_id=execution_id, mcp_activity=activity,
+        )
 
     def list_messages(self, conversation_id: str) -> list[MessageRead]:
         with self.connection() as connection:
@@ -723,7 +980,7 @@ class Database:
                 "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at, rowid",
                 (conversation_id,),
             ).fetchall()
-        return [MessageRead(**dict(row)) for row in rows]
+        return [_message_from_row(row) for row in rows]
 
     def get_user_analytics(self, user_id: str) -> dict[str, object]:
         with self.connection() as connection:

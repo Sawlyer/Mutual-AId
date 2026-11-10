@@ -2,6 +2,7 @@ import {
   Bot,
   ChartNoAxesCombined,
   Cable,
+  Library,
   MessageSquareText,
   MessagesSquare,
   type LucideIcon,
@@ -19,7 +20,8 @@ export interface NavigationItem {
 export const navigationItems: NavigationItem[] = [
   { to: '/', label: 'Chat', icon: MessageSquareText, end: true },
   { to: '/conversations', label: 'Conversations', icon: MessagesSquare },
-  { to: '/connectors', label: 'Connecteurs', icon: Cable },
+  { to: '/connectors', label: 'Connecteurs', icon: Cable, end: true },
+  { to: '/connectors/mcp', label: 'Catalogue MCP', icon: Library },
   { to: '/agents', label: 'Agents', icon: Bot },
   { to: '/executions', label: 'Exécutions', icon: Workflow },
   { to: '/analytics', label: 'Analytics', icon: ChartNoAxesCombined },
@@ -33,6 +35,7 @@ export const pageMeta: Record<string, { title: string; description: string }> = 
   },
   '/conversations': { title: 'Conversations', description: 'Retrouvez vos échanges et orchestrations.' },
   '/connectors': { title: 'Connecteurs', description: 'Gérez les services externes disponibles.' },
+  '/connectors/mcp': { title: 'Catalogue MCP', description: 'Recherchez et activez des serveurs MCP autorisés.' },
   '/executions': { title: 'Exécutions', description: 'Suivez les orchestrations démarrées depuis le chat.' },
   '/agents': {
     title: 'Agents',

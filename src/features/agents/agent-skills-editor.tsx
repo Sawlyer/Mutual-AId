@@ -132,15 +132,15 @@ export function AgentSkillsEditor({ profile, onChange }: AgentSkillsEditorProps)
             const assigned = assignedIds.includes(skill.id)
             return <li key={skill.id} className="flex flex-wrap items-start gap-3 rounded-lg border border-border/70 bg-card p-3">
               <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2.5">
-                <input type="checkbox" checked={assigned} disabled={busy} onChange={(event) => void persistAssignment(event.target.checked ? [...assignedIds, skill.id] : assignedIds.filter((id) => id !== skill.id))} aria-label={`Affecter ${skill.name} à ${profile.name}`} className="mt-0.5 accent-primary" />
+                <input type="checkbox" checked={assigned} disabled={busy || skill.review_status !== 'approved'} onChange={(event) => void persistAssignment(event.target.checked ? [...assignedIds, skill.id] : assignedIds.filter((id) => id !== skill.id))} aria-label={`Affecter ${skill.name} à ${profile.name}`} className="mt-0.5 accent-primary" />
                 <span className="min-w-0">
-                  <span className="flex flex-wrap items-center gap-2 text-xs font-medium">{skill.name}<span className={`rounded px-1.5 py-0.5 text-[9px] ${skill.enabled ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-muted text-muted-foreground'}`}>{skill.enabled ? 'Activée' : 'Désactivée'}</span>{assigned && <span className="rounded bg-primary/8 px-1.5 py-0.5 text-[9px] text-primary">Affectée</span>}</span>
+                  <span className="flex flex-wrap items-center gap-2 text-xs font-medium">{skill.name}<span className={`rounded px-1.5 py-0.5 text-[9px] ${skill.enabled ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-muted text-muted-foreground'}`}>{skill.enabled ? 'Activée' : 'Désactivée'}</span>{skill.source === 'marketplace' && skill.catalog_version !== null && <span className="rounded bg-primary/8 px-1.5 py-0.5 text-[9px] text-primary">Marketplace v{skill.catalog_version}</span>}{skill.review_status === 'pending' && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] text-amber-700 dark:text-amber-300">À vérifier dans la marketplace</span>}{assigned && <span className="rounded bg-primary/8 px-1.5 py-0.5 text-[9px] text-primary">Affectée</span>}</span>
                   {skill.description && <span className="mt-1 block text-[11px] text-muted-foreground">{skill.description}</span>}
                 </span>
               </label>
               <div className="flex shrink-0 gap-1">
                 <Button type="button" size="xs" variant="ghost" disabled={busy} aria-label={`Modifier ${skill.name}`} onClick={() => beginEdit(skill)}><Pencil aria-hidden="true" className="size-3.5" /></Button>
-                <Button type="button" size="xs" variant="ghost" disabled={busy} onClick={() => void toggleEnabled(skill)}>{skill.enabled ? 'Désactiver' : 'Activer'}</Button>
+                {skill.review_status === 'approved' && <Button type="button" size="xs" variant="ghost" disabled={busy} onClick={() => void toggleEnabled(skill)}>{skill.enabled ? 'Désactiver' : 'Activer'}</Button>}
                 <Button type="button" size="xs" variant="ghost" disabled={busy} aria-label={`Supprimer ${skill.name}`} onClick={() => void deleteSkill(skill)} className="text-muted-foreground hover:text-destructive"><Trash2 aria-hidden="true" className="size-3.5" /></Button>
               </div>
             </li>

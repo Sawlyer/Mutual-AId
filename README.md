@@ -2,6 +2,18 @@
 
 Mutual-AId est une interface de chat React + Vite + TypeScript reliée à un backend FastAPI. Le backend utilise le SDK officiel OpenAI Agents, conserve les conversations dans SQLite et peut planifier les demandes complexes en tâches suivies dans un workflow. Google Calendar est disponible en lecture seule lorsque son OAuth est configuré.
 
+## Architecture
+
+<p align="center">
+  <a href="./.archify/architecture-mutual-aid-20261027-114110/mutual-aid.html">
+    <img src="./.archify/architecture-mutual-aid-20261027-114110/architecture-preview.png" alt="Architecture de Mutual-AId : chat React, API FastAPI, orchestration Agents SDK, stockage SQLite et connecteurs contrôlés" width="100%">
+  </a>
+  <br>
+  <a href="./.archify/architecture-mutual-aid-20261027-114110/mutual-aid.html"><strong>Télécharger la carte interactive (HTML autonome) →</strong></a>
+</p>
+
+Le schéma source-backed résume le parcours du chat, la séparation entre réponse simple et exécution en DAG, la persistance SQLite et les contrôles d’accès des connecteurs.
+
 Les agents de code s’appuient sur `AGENTS.md` (aussi dans `src/`, `backend/`, `backend/app/connectors/` et `backend/tests/`) et sur `.agents/skills/`. Cursor reprend ce contexte dans `.cursor/rules/` et `.cursor/skills/`. Ce README reste le guide d’installation.
 
 ## Démarrage rapide avec Docker
@@ -20,6 +32,39 @@ Docker construit et lance le frontend et le backend. Il n'est pas nécessaire d'
 Pour obtenir de vraies réponses IA, créez `backend/.env` à partir de `backend/.env.example` et renseignez `OPENAI_API_KEY` ainsi que `OPENAI_MODEL`. Compose charge automatiquement ce fichier s'il existe. Les clés restent côté backend et ne sont pas intégrées aux images Docker. Sans clé, les conteneurs démarrent mais le backend ne peut pas fournir de réponses OpenAI.
 
 Les comptes, conversations et sessions SQLite sont conservés dans un volume Docker nommé. **Ctrl+C** arrête le lancement au premier plan sans supprimer les données. `docker compose down` arrête et retire les conteneurs, tout en conservant les données. Pour effacer aussi les données locales, utilisez `docker compose down -v`.
+
+## Maintenance de SQLite
+
+Depuis le dossier `backend/`, `uv run python -m app.db_maintenance` fournit des commandes opérateur. Les sauvegardes utilisent l’API SQLite en ligne, incluent les écritures validées du journal WAL, sont vérifiées avec `integrity_check` et ne remplacent jamais un fichier existant. Choisissez une destination durable située hors du dépôt et du volume de données de l’application : une copie conservée dans le même volume ne protège pas d’une perte de ce volume.
+
+```bash
+# Créer un snapshot pendant que l’application tourne.
+uv run python -m app.db_maintenance backup --destination /chemin-securise/mutual-aid.sqlite3
+
+# Restaurer vers un nouveau fichier, sans écraser la base active.
+uv run python -m app.db_maintenance restore --source /chemin-securise/mutual-aid.sqlite3 --destination ./data/mutual-aid-restored.sqlite3
+```
+
+Après restauration, arrêtez l’application, vérifiez que le nouveau fichier est bien celui choisi, puis définissez `DATABASE_PATH` vers ce fichier avant de redémarrer. L’application applique ses migrations au démarrage. Pour Docker Compose, `DATABASE_PATH` peut être défini dans le fichier `.env` utilisé par Compose ; sa valeur par défaut reste `/app/backend/data/mutual_aid.sqlite3`. Testez régulièrement une restauration sur une copie distincte avant de dépendre d’une sauvegarde.
+
+La purge des artefacts est manuelle et limitée aux exécutions terminales. Sans `--apply`, la commande affiche uniquement le nombre d’artefacts plus anciens que la durée indiquée ; contrôlez ce nombre avant toute suppression :
+
+```bash
+uv run python -m app.db_maintenance prune-artifacts --retention-days 90
+uv run python -m app.db_maintenance prune-artifacts --retention-days 90 --apply
+```
+
+Pour un déploiement HTTPS, configurez `AUTH_COOKIE_SECURE=true`, le proxy TLS et `ALLOWED_ORIGINS` avec les origines frontend exactes. Gardez les clés et sauvegardes hors du dépôt et limitez l’accès aux sauvegardes comme à la base active.
+
+### Comptes, secrets et mises à jour
+
+Un utilisateur peut supprimer son compte depuis **Paramètres** après avoir confirmé son mot de passe. Les conversations, exécutions, artefacts, profils, skills, configurations MCP, sessions et identifiants OAuth locaux sont supprimés ensemble. Une suppression est refusée tant qu’une exécution est active. La révocation des jetons Google/GitHub est tentée avant leur suppression locale ; si le fournisseur est indisponible, supprimez aussi l’autorisation depuis les paramètres de sécurité du fournisseur.
+
+Pour renouveler `OPENAI_API_KEY`, créez la nouvelle clé dans OpenAI, remplacez la valeur dans le gestionnaire de secrets ou `backend/.env`, puis redémarrez le backend. Révoquez l’ancienne clé après vérification du service. `CONNECTOR_TOKEN_ENCRYPTION_KEY` utilise actuellement une clé unique sans migration entre clés : ne la remplacez pas tant que des jetons OAuth ou MCP doivent être conservés. Déconnectez les connecteurs Google/GitHub et supprimez puis recréez les serveurs MCP avec leurs nouveaux secrets avant de changer cette clé.
+
+Avant chaque mise à jour, créez une sauvegarde vérifiée. Les migrations SQLite sont appliquées au démarrage et ne proposent pas de downgrade automatique : pour revenir à une ancienne version, arrêtez l’application, restaurez une copie de la sauvegarde vers un nouveau fichier, pointez `DATABASE_PATH` sur cette copie et redémarrez avec l’ancienne image. Vérifiez les données restaurées avant de supprimer les fichiers précédents.
+
+SQLite convient à une instance applicative avec un volume persistant et une seule base partagée. Il sérialise les écritures et ne doit pas être monté comme stockage multi-écrivain entre plusieurs hôtes. Si les attentes de verrouillage deviennent régulières ou si plusieurs workers doivent écrire en parallèle, migrez vers un serveur de base de données avant d’augmenter le nombre d’instances.
 
 Compose v2.24 ou plus récent est nécessaire pour que le fichier local `backend/.env` soit facultatif. Il est inclus dans Docker Desktop à jour ; sur Linux, installez le plugin Docker Compose correspondant à votre distribution.
 
@@ -73,20 +118,34 @@ Le mode utilisé par défaut est `openai`. Pour revenir au mode de démonstratio
 - `GET /api/conversations/{id}/messages` : récupérer son historique
 - `POST /api/conversations/{id}/messages/stream` : envoyer `{ "content": "…" }` et recevoir `text/event-stream`
 
-Le flux SSE émet `user`, `delta`, `done` et `error`. Seuls les deltas de texte destinés à l’utilisateur sont transmis ; le raisonnement privé et les erreurs détaillées restent côté serveur.
+Le flux SSE émet `user`, `delta`, `mcp.activity`, `mcp.suggestion`, `plan.ready`, `execution.created`, `done` et `error`. Seuls les deltas de texte destinés à l’utilisateur sont transmis ; le raisonnement privé et les erreurs détaillées restent côté serveur. Une suggestion MCP ne contient que l’identifiant de fiche, le nom et la catégorie. `mcp.activity` ne contient que l’identifiant d’appel, le nom du serveur, le nom de l’outil et le statut.
 
 Toutes les routes de conversation et de connecteur nécessitent une session. Les routes historiques `/dashboard`, `/missions/*` et `/executions/*` redirigent vers le chat : elles ne créent plus de données de démonstration qui ressemblent à de vraies exécutions.
 
 ## Connecteurs
 
-La page Connecteurs affiche Gmail, Google Drive, Google Calendar, GitHub et Custom MCP Server. Gmail, Drive et Calendar utilisent le client OAuth Google commun ; GitHub utilise une OAuth App. Chaque service reste `setup_required` tant que ses paramètres serveur ne sont pas présents et passe en lecture seule après configuration. Custom MCP reste indisponible jusqu’à l’ajout et l’approbation d’un serveur dans l’interface dédiée.
+La page Connecteurs affiche Gmail, Google Drive, Google Calendar et GitHub, puis un lien vers le catalogue MCP. Gmail, Drive et Calendar utilisent le client OAuth Google commun ; GitHub utilise une OAuth App. Chaque service reste `setup_required` tant que ses paramètres serveur ne sont pas présents et passe en lecture seule après configuration.
 
 - `GET /api/connectors` renvoie le catalogue, les permissions et les outils réellement accessibles à l’utilisateur courant.
 - `GET /api/conversations/{id}/connectors` lit les connecteurs sélectionnés pour la conversation.
 - `PUT /api/conversations/{id}/connectors` enregistre une sélection. Le backend rejette un connecteur déconnecté ou indisponible avec `409`.
 - Le corps de `POST /api/conversations/{id}/messages/stream` accepte `connector_ids`. Le backend compare cette liste aux préférences enregistrées, puis ne fournit au SDK Agents que les outils autorisés et dotés des scopes accordés. Les outils d’écriture sans permission explicite, et ceux qui attendent une validation humaine, ne sont pas donnés à l’agent.
 
-Les serveurs MCP personnalisés se gèrent dans la page Connecteurs. Seuls les endpoints publics HTTP(S) Streamable HTTP sont acceptés; les adresses locales/privées et les redirections vers une autre origine sont rejetées. Un jeton Bearer facultatif est chiffré avec `CONNECTOR_TOKEN_ENCRYPTION_KEY` et n’est jamais retourné au frontend. L’utilisateur doit tester le serveur puis autoriser chaque outil de lecture. Les outils annoncés comme écriture, destructifs ou sans annotation de lecture restent bloqués. L’API fournit `GET/POST /api/connectors/mcp`, `POST /api/connectors/mcp/{id}/refresh`, `PUT /api/connectors/mcp/{id}/tools` et `DELETE /api/connectors/mcp/{id}`. La sélection `mcp:{id}` est stockée avec les préférences de conversation et revalidée avant chaque exécution.
+Le catalogue MCP est une page dédiée, `/connectors/mcp`. Elle ne liste que les fiches dont la page du répertoire publie une adresse distante dans le bloc « Serveur MCP hébergé ». L’instantané local conserve le nom, la description, la catégorie, l’URL de fiche, les badges, cette adresse et l’indication qu’un jeton utilisateur est obligatoire. Les commandes d’installation et les URL citées seulement dans le texte ne sont pas utilisées. La recherche et les suggestions restent sur la machine ; le texte d’un prompt n’est pas envoyé au répertoire.
+
+Pour rafraîchir l’instantané, depuis `backend/` :
+
+```bash
+uv run python scripts/import_mcp_catalog.py
+```
+
+Si le répertoire répond par un contrôle anti-robot, enregistrez les fiches déjà analysées dans un fichier JSON et lancez `uv run python scripts/import_mcp_catalog.py --from-json fiches.json`. Le résultat est `backend/app/connectors/data/mcp_catalog.sqlite3`.
+
+Le bouton Mettre à jour relit `https://mcpservers.org/fr/all` et ajoute les nouvelles fiches de ce type. Si le répertoire ne répond pas, la liste déjà enregistrée est conservée. L’activation affiche l’adresse publiée : c’est celle que le backend appellera. Le jeton n’est demandé que lorsque la fiche l’exige. Il est chiffré et n’est jamais réaffiché; les jetons Bearer ne peuvent être stockés ou envoyés qu’avec une adresse HTTPS. Le serveur est créé désactivé, puis testé. Seuls les outils de lecture approuvés peuvent être activés. Les outils d’écriture ou non annotés restent visibles, marqués comme nécessitant une approbation, et ne sont pas exécutables. Un serveur peut être désactivé sans être supprimé. La sélection `mcp:{id}` reste obligatoire dans la conversation. Un profil d’agent n’appelle un outil que s’il lui est aussi affecté. Le backend revérifie ces conditions immédiatement avant chaque appel. Les redirections HTTP sont refusées. Les journaux et l’interface ne conservent pas les jetons.
+
+Les transports acceptés sont HTTP et HTTPS publics, en mode normal comme dans Docker. Aucune commande stdio n’est acceptée, et Compose ne lance pas de processus MCP. L’exemple `backend/examples/readonly_mcp/server.py` est réservé au développement : il n’écoute que sur `127.0.0.1:8765`, expose uniquement l’outil `health`, et n’est joignable que si `MCP_ALLOW_LOOPBACK=true`. Cette variable reste fausse par défaut et n’est pas définie dans Compose. Les adresses privées, le lien local et les métadonnées cloud restent refusées.
+
+L’API fournit `GET /api/connectors/mcp/catalog`, `POST /api/connectors/mcp/catalog/refresh`, `POST /api/connectors/mcp/suggestions`, `GET/POST /api/connectors/mcp`, `POST /api/connectors/mcp/{id}/refresh`, `PATCH /api/connectors/mcp/{id}`, `PUT /api/connectors/mcp/{id}/tools`, `DELETE /api/connectors/mcp/{id}` et `GET/PUT /api/agents/{id}/mcp-tools`. Un jeton exigé par la fiche est chiffré avec `CONNECTOR_TOKEN_ENCRYPTION_KEY` et n’est jamais retourné au frontend.
 
 Le backend stocke les états OAuth à usage unique et les jetons Google chiffrés avec `CONNECTOR_TOKEN_ENCRYPTION_KEY`, séparément par compte. L’outil Calendar revérifie connexion, sélection de conversation et scope à chaque appel, puis ne renvoie que titre, début, fin et statut d’événement. Aucun outil d’écriture Calendar n’est activé. Les comptes disposent d’une inscription, connexion, déconnexion et session persistante en cookie HttpOnly. Les mots de passe sont hachés avec Argon2. Configurez `AUTH_COOKIE_SECURE=true` lorsque l’application est servie en HTTPS.
 
