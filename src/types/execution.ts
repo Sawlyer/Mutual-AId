@@ -1,5 +1,6 @@
-export type ExecutionStatus = 'planning' | 'running' | 'pausing' | 'paused' | 'awaiting_approval' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'interrupted'
+export type ExecutionStatus = 'planning' | 'running' | 'pausing' | 'paused' | 'awaiting_approval' | 'validating' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'interrupted'
 export type ExecutionTaskStatus = 'pending' | 'ready' | 'running' | 'awaiting_approval' | 'validating' | 'completed' | 'failed' | 'blocked' | 'paused' | 'interrupted' | 'cancelled'
+export type ExecutionResultReviewStatus = 'pending' | 'verified' | 'needs_review' | 'unavailable' | 'skipped'
 
 export interface ExecutionTask {
   id: string
@@ -25,6 +26,8 @@ export interface Execution {
   status: ExecutionStatus
   summary: string
   tasks: ExecutionTask[]
+  result_review_status: ExecutionResultReviewStatus
+  result_review_feedback: string | null
   created_at: string
   updated_at: string
 }
