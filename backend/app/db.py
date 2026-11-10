@@ -204,6 +204,8 @@ class Database:
                     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
                     status TEXT NOT NULL,
                     summary TEXT NOT NULL,
+                    result_review_status TEXT NOT NULL DEFAULT 'pending',
+                    result_review_feedback TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -300,6 +302,17 @@ class Database:
                 connection.execute("ALTER TABLE messages ADD COLUMN mcp_activity_json TEXT")
             if "owner_id" not in conversation_columns:
                 connection.execute("ALTER TABLE conversations ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'local-user'")
+            execution_columns = {row["name"] for row in connection.execute("PRAGMA table_info(executions)")}
+            if "result_review_status" not in execution_columns:
+                connection.execute("ALTER TABLE executions ADD COLUMN result_review_status TEXT NOT NULL DEFAULT 'pending'")
+            if "result_review_feedback" not in execution_columns:
+                connection.execute("ALTER TABLE executions ADD COLUMN result_review_feedback TEXT")
+            connection.execute(
+                """UPDATE executions SET result_review_status = 'skipped',
+                   result_review_feedback = 'Cette exécution précède la revue IA.'
+                   WHERE status IN ('completed', 'partial', 'failed', 'cancelled', 'interrupted')
+                     AND result_review_status = 'pending'"""
+            )
             task_columns = {row["name"] for row in connection.execute("PRAGMA table_info(execution_tasks)")}
             if "agent_profile_snapshot_json" not in task_columns:
                 connection.execute("ALTER TABLE execution_tasks ADD COLUMN agent_profile_snapshot_json TEXT")
@@ -690,7 +703,7 @@ class Database:
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT 1 FROM executions WHERE user_id = ? AND status IN "
-                "('planning', 'running', 'pausing', 'awaiting_approval') LIMIT 1",
+                "('planning', 'running', 'pausing', 'paused', 'awaiting_approval', 'validating') LIMIT 1",
                 (user_id,),
             ).fetchone()
         return row is not None

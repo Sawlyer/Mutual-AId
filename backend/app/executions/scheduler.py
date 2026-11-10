@@ -130,5 +130,5 @@ class DagScheduler:
             elif any(task.status == "cancelled" for task in execution.tasks):
                 self.repository.set_execution_status(self.user_id, self.execution_id, "cancelled", "Exécution annulée")
             else:
-                self.repository.set_execution_status(self.user_id, self.execution_id, "completed", "Toutes les tâches sont terminées")
+                self.repository.set_execution_status(self.user_id, self.execution_id, "validating", "Revue du résultat en cours")
             return

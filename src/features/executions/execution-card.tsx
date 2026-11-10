@@ -15,6 +15,7 @@ const statusLabel: Record<Execution['status'], string> = {
   pausing: 'Mise en pause',
   paused: 'En pause',
   awaiting_approval: 'Approbation requise',
+  validating: 'Revue du résultat',
   completed: 'Terminée',
   partial: 'Partiellement terminée',
   failed: 'Échec',

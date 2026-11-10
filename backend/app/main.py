@@ -19,6 +19,7 @@ from app.agents.service import AgentService, InvalidSkillAssignment, UnsafeGener
 from app.agents.models import AgentSkillCreate, AgentSkillUpdate
 from app.agents.skills import AgentSkillRead, GeneratedSkillReview, SkillCatalogComparison, SkillCatalogInstall, SkillCatalogItem, SkillUpgradeRequest, SkillUpgradeResult
 from app.executions.coordinator import ExecutionCoordinator
+from app.executions.reviewer import ExecutionResultReviewer
 from app.executions.models import ExecutionArtifactContent, ExecutionArtifactRead, ExecutionEventRead
 from app.executions.repository import ExecutionRepository
 from app.planning.router import RequestRouter
@@ -1388,6 +1389,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.execution_coordinator = ExecutionCoordinator(
         application.state.execution_repository, profiles, app_settings, database,
         application.state.tool_registry, google_oauth, github_oauth, application.state.mcp_runtime,
+        ExecutionResultReviewer(app_settings),
     )
     application.state.request_router = RequestRouter(Planner(app_settings), profiles)
     application.state.rate_limiter = RequestLimiter(app_settings.requests_per_minute)

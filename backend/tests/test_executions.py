@@ -183,7 +183,7 @@ def test_scheduler_runs_parallel_tasks_and_waits_for_dependencies(tmp_path):
     asyncio.run(DagScheduler(repo, execute, "owner-id", execution.id, max_concurrency=2).run())
     assert order.index(("a", "end")) < order.index(("c", "start"))
     assert order.index(("b", "end")) < order.index(("c", "start"))
-    assert repo.get("owner-id", execution.id).status == "completed"
+    assert repo.get("owner-id", execution.id).status == "validating"
 
 
 def test_scheduler_pauses_at_task_boundary_without_starting_dependents(tmp_path):
