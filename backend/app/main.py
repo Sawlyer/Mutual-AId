@@ -108,7 +108,9 @@ def _mcp_row_is_listed(catalog: McpCatalog, row: dict[str, object]) -> bool:
     catalog_id = str(row.get("catalog_id") or "")
     if catalog_id:
         entry = catalog.get(catalog_id)
-        if entry is not None and not is_free_server(entry):
+        if entry is None:
+            return row.get("status") == "ready"
+        if not is_free_server(entry):
             return False
     return not catalog.charges_for_endpoint(str(row.get("url") or ""))
 
@@ -745,7 +747,8 @@ async def send_message_stream(
     except McpAuthorizationError as error:
         raise HTTPException(status_code=409, detail="Un serveur MCP sélectionné n’est pas autorisé.") from error
     resume = payload.resume_with_tools
-    if resume:
+    decline = payload.decline_mcp_suggestions
+    if resume or decline:
         previous = next(
             (
                 message for message in reversed(database.list_messages(conversation_id))
@@ -761,7 +764,8 @@ async def send_message_stream(
         if len(payload.content) > settings.max_message_chars:
             raise HTTPException(status_code=413, detail="Le message dépasse la limite autorisée.")
     if not settings.openai_configured:
-        database.create_message(conversation_id, "user", payload.content.strip())
+        if not resume and not decline:
+            database.create_message(conversation_id, "user", prompt)
         raise HTTPException(status_code=503, detail="Le service IA n’est pas configuré sur le backend.")
 
     lock = request.app.state.conversation_locks[conversation_id]
@@ -770,7 +774,7 @@ async def send_message_stream(
         async with lock:
             if await request.is_disconnected():
                 return
-            if not resume:
+            if not resume and not decline:
                 user_message = database.create_message(conversation_id, "user", prompt)
                 yield sse_event("user", user_message.model_dump(mode="json"))
             turn_connector_ids = list(payload.connector_ids)
@@ -792,7 +796,7 @@ async def send_message_stream(
                 )
             usable = [row for row in ready if f"{MCP_CONNECTOR_PREFIX}{row['id']}" in turn_mcp_ids]
             missing = [entry for entry in needed if not any(str(row.get("catalog_id")) == str(entry["id"]) for row in usable)]
-            if not usable and missing and not resume:
+            if not usable and missing and not resume and not decline:
                 yield sse_event("mcp.suggestion", {"suggestions": [
                     {"id": entry["id"], "name": entry["name"], "category": entry["category"]} for entry in missing
                 ]})
@@ -965,7 +969,9 @@ async def list_mcp_servers(request: Request, database: Db, settings: AppSettings
     return [
         server for server in McpService(database, settings).list_servers(user.id)
         if _mcp_row_is_listed(
-            request.app.state.mcp_catalog, {"catalog_id": server.catalog_id, "url": server.url},
+            request.app.state.mcp_catalog, {
+                "catalog_id": server.catalog_id, "url": server.url, "status": server.status,
+            },
         )
     ]
 

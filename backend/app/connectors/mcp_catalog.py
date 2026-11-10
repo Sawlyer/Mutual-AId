@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from html import unescape
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -134,11 +135,57 @@ def qualify_listing_entry(entry: dict[str, object], detail_html: str) -> dict[st
     return qualified
 
 
+PROBE_TIMEOUT_SECONDS = 4.0
+_PROTOCOL_VERSION = "2025-03-26"
+_KEEP_VERDICTS = frozenset({"tools", "auth"})
+
+
+def probe_remote_tools(
+    endpoint: str, *, timeout: float = PROBE_TIMEOUT_SECONDS, client=None,
+) -> str:
+    """Return tools, auth, or empty. Empty means unreachable, not MCP, no tool, or OAuth-only."""
+    try:
+        endpoint = validate_public_endpoint(endpoint, resolve=True)
+    except ValueError:
+        return "empty"
+    owns_client = client is None
+    if owns_client:
+        import httpx
+        client = httpx.Client(timeout=timeout, follow_redirects=False)
+    try:
+        return _probe_open_client(client, endpoint)
+    except Exception:
+        return "empty"
+    finally:
+        if owns_client:
+            client.close()
+
+
+def prune_catalog(
+    path: Path, *, probe=None, workers: int = 16, progress=None, allow_empty: bool = True,
+) -> dict[str, object]:
+    """Rewrite the snapshot without endpoints that are unreachable or publish no tool."""
+    entries = McpCatalog(path).entries()
+    verdicts = _probe_many(
+        [str(entry.get("endpoint") or "") for entry in entries],
+        probe or probe_remote_tools,
+        max(1, workers),
+        progress,
+    )
+    kept = [entry for entry, verdict in zip(entries, verdicts) if verdict in _KEEP_VERDICTS]
+    removed = len(entries) - len(kept)
+    if entries and not kept and not allow_empty:
+        return {"kept": len(entries), "removed": 0, "skipped": True}
+    if removed:
+        write_catalog(path, kept)
+    return {"kept": len(kept), "removed": removed, "skipped": False}
+
+
 class DirectoryRefused(Exception):
     """The public directory returned a challenge instead of pages."""
 
 
-def refresh_catalog(path: Path, *, base_url: str = DIRECTORY_BASE_URL, fetch=None) -> dict[str, object]:
+def refresh_catalog(path: Path, *, base_url: str = DIRECTORY_BASE_URL, fetch=None, probe=None) -> dict[str, object]:
     """Add newly published remote fiches. A directory challenge leaves the current snapshot untouched."""
     client = None
     if fetch is None:
@@ -153,7 +200,9 @@ def refresh_catalog(path: Path, *, base_url: str = DIRECTORY_BASE_URL, fetch=Non
             return response.status_code, response.text
     try:
         try:
-            fresh = collect_new_remote_entries(fetch, McpCatalog(path).ids(), base_url)
+            fresh = collect_new_remote_entries(
+                fetch, McpCatalog(path).ids(), base_url, probe=probe or probe_remote_tools,
+            )
         except DirectoryRefused:
             return {
                 "added": 0,
@@ -173,7 +222,9 @@ def refresh_catalog(path: Path, *, base_url: str = DIRECTORY_BASE_URL, fetch=Non
             client.close()
 
 
-def collect_new_remote_entries(fetch, existing_ids: set[str], base_url: str = DIRECTORY_BASE_URL) -> list[dict[str, object]]:
+def collect_new_remote_entries(
+    fetch, existing_ids: set[str], base_url: str = DIRECTORY_BASE_URL, *, probe=None,
+) -> list[dict[str, object]]:
     listings: list[dict[str, object]] = []
     for page in range(1, MAX_LISTING_PAGES + 1):
         status, text = fetch(_page_url(base_url, page))
@@ -198,9 +249,172 @@ def collect_new_remote_entries(fetch, existing_ids: set[str], base_url: str = DI
         if _directory_refused(status, text):
             raise DirectoryRefused
         qualified = qualify_listing_entry(entry, text)
-        if qualified is not None:
+        if qualified is None:
+            continue
+        if _listing_is_reachable(str(qualified["endpoint"]), probe or probe_remote_tools):
             fresh.append(qualified)
     return fresh
+
+
+def _listing_is_reachable(endpoint: str, probe) -> bool:
+    return _safe_verdict(probe, endpoint) in _KEEP_VERDICTS
+
+
+def _probe_many(endpoints: list[str], probe, workers: int, progress) -> list[str]:
+    if not endpoints:
+        return []
+    if workers == 1:
+        verdicts: list[str] = []
+        for index, endpoint in enumerate(endpoints, start=1):
+            verdicts.append(_safe_verdict(probe, endpoint))
+            if progress is not None:
+                progress(index, len(endpoints))
+        return verdicts
+    verdicts = ["empty"] * len(endpoints)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_safe_verdict, probe, endpoint): index
+            for index, endpoint in enumerate(endpoints)
+        }
+        done = 0
+        for future in as_completed(futures):
+            verdicts[futures[future]] = future.result()
+            done += 1
+            if progress is not None:
+                progress(done, len(endpoints))
+    return verdicts
+
+
+def _safe_verdict(probe, endpoint: str) -> str:
+    try:
+        verdict = probe(endpoint)
+    except Exception:
+        return "empty"
+    return verdict if verdict in {"tools", "auth", "empty"} else "empty"
+
+
+def _probe_open_client(client, endpoint: str) -> str:
+    opened = client.post(endpoint, headers=_probe_headers(), json=_initialize_body())
+    if opened.status_code == 401:
+        return _challenge_verdict(opened)
+    if opened.status_code != 200 or not _jsonrpc_payloads(opened.text):
+        return "empty"
+    headers = _probe_headers(session=_session_id(opened.headers))
+    client.post(
+        endpoint, headers=headers,
+        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+    )
+    listed = client.post(
+        endpoint, headers=headers,
+        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    )
+    if listed.status_code == 401:
+        return _challenge_verdict(listed)
+    if listed.status_code != 200:
+        return "empty"
+    count = _tool_count(_jsonrpc_payloads(listed.text))
+    if not count:
+        return "empty"
+    return "tools"
+
+
+def _challenge_verdict(response) -> str:
+    """A pasted token can unlock a 401. An OAuth metadata challenge cannot be finished here."""
+    header = response.headers.get("www-authenticate", "")
+    body = getattr(response, "text", "")
+    header_text = header if isinstance(header, str) else ""
+    body_text = body[:4000] if isinstance(body, str) else ""
+    folded = f"{header_text}\n{body_text}".casefold()
+    if "resource_metadata" in folded or "authorization_servers" in folded:
+        return "empty"
+    return "auth"
+
+
+def _initialize_body() -> dict[str, object]:
+    return {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": _PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "mutual-aid", "version": "0"},
+        },
+    }
+
+
+def _probe_headers(session: str = "") -> dict[str, str]:
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": _PROTOCOL_VERSION,
+    }
+    if session:
+        headers["mcp-session-id"] = session
+    return headers
+
+
+def _session_id(headers) -> str:
+    value = headers.get("mcp-session-id", "")
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    if not value or len(value) > 200 or any(char.isspace() for char in value):
+        return ""
+    return value
+
+
+def _jsonrpc_payloads(body: str) -> list[dict[str, object]]:
+    text = body.strip()
+    if not text:
+        return []
+    if text[0] in "{[":
+        return _json_payloads(text)
+    payloads: list[dict[str, object]] = []
+    data: list[str] = []
+
+    def flush() -> None:
+        if not data:
+            return
+        raw = "\n".join(data)
+        data.clear()
+        payloads.extend(_json_payloads(raw))
+
+    for line in body.splitlines():
+        if line.startswith("data:"):
+            data.append(line[5:].lstrip())
+        elif not line.strip():
+            flush()
+    flush()
+    return payloads
+
+
+def _json_payloads(raw: str) -> list[dict[str, object]]:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(payload, dict):
+        return [payload]
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    return []
+
+
+def _named_tool(tool: object) -> bool:
+    return isinstance(tool, dict) and isinstance(tool.get("name"), str) and bool(tool["name"].strip())
+
+
+def _tool_count(payloads: list[dict[str, object]]) -> int | None:
+    for payload in payloads:
+        result = payload.get("result")
+        if not isinstance(result, dict) or "tools" not in result:
+            continue
+        tools = result.get("tools")
+        if not isinstance(tools, list):
+            return 0
+        return sum(1 for tool in tools if _named_tool(tool))
+    return None
 
 
 def append_catalog(path: Path, entries: list[dict[str, object]]) -> int:

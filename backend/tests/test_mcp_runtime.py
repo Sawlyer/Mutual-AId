@@ -298,6 +298,41 @@ def test_mcp_runtime_filters_to_approved_read_tools_and_isolates_users(tmp_path)
     asyncio.run(run())
 
 
+def test_hidden_http_401_is_reported_as_publisher_sign_in(tmp_path):
+    class MCPError(Exception):
+        pass
+
+    class DeniedServer(FakeMcpServer):
+        async def __aenter__(self):
+            raise ExceptionGroup(
+                "unhandled errors in a TaskGroup",
+                [MCPError("Server returned an error response")],
+            )
+
+    database = Database(tmp_path / "opaque-auth.sqlite3")
+    database.initialize()
+    settings = Settings(database_path=database.path, connector_token_encryption_key=Fernet.generate_key().decode())
+    created = McpService(database, settings).create_server(
+        "user-a", McpServerCreate(name="Drive", url="https://1.1.1.1/mcp"),
+    )
+
+    async def probe(endpoint, *, allow_loopback):
+        return "https://8.8.8.8/login", False
+
+    runtime = McpRuntime(
+        database, settings, server_factory=lambda **kwargs: DeniedServer([], **kwargs), access_probe=probe,
+    )
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(runtime.refresh_tools("user-a", str(created.id)))
+
+    assert error.value.status_code == 422
+    assert error.value.detail["connect_url"] == "https://8.8.8.8/login"
+    row = database.get_mcp_server("user-a", str(created.id))
+    assert row["last_error"] == "Ce serveur MCP demande une connexion au compte de l’éditeur."
+    assert "Impossible de joindre" not in row["last_error"]
+
+
 def test_mcp_discovery_timeout_is_bounded_and_status_error_is_sanitized(tmp_path):
     class SlowServer(FakeMcpServer):
         async def list_tools(self):

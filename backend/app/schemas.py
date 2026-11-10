@@ -98,6 +98,7 @@ class MessageCreate(BaseModel):
     connector_ids: list[str] = Field(default_factory=list, max_length=5)
     use_connected_tools: bool = False
     resume_with_tools: bool = False
+    decline_mcp_suggestions: bool = False
 
     @field_validator("connector_ids")
     @classmethod
@@ -108,7 +109,10 @@ class MessageCreate(BaseModel):
 
     @model_validator(mode="after")
     def content_required_for_a_new_turn(self) -> "MessageCreate":
-        if not self.resume_with_tools and not self.content.strip():
+        if self.resume_with_tools and self.decline_mcp_suggestions:
+            raise ValueError("resume_with_tools and decline_mcp_suggestions cannot both be set")
+        continuing = self.resume_with_tools or self.decline_mcp_suggestions
+        if not continuing and not self.content.strip():
             raise ValueError("content is required")
         return self
 
