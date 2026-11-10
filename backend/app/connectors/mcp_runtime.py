@@ -179,6 +179,11 @@ def _iter_exceptions(error: BaseException):
             pending.append(current.__context__)
 
 
+def _opaque_discovery_failure(error: BaseException) -> bool:
+    """The streamable HTTP client hides an HTTP 401 inside MCPError."""
+    return any(type(item).__name__ in {"MCPError", "ExceptionGroup"} for item in _iter_exceptions(error))
+
+
 def _requires_publisher_sign_in(error: BaseException) -> bool:
     for item in _iter_exceptions(error):
         if "missing authorization" in str(item).casefold():
@@ -362,8 +367,9 @@ class McpRuntime:
             tools = [classify(tool).model_dump(mode="json") for tool in remote_tools]
             self.database.update_mcp_server_tools(user_id, server_id, tools)
         except Exception as error:
-            if _requires_publisher_sign_in(error):
-                message, connect_url, needs_token = await self._describe_refusal(str(row["url"]))
+            refusal = await self._refusal_after_discovery_failure(str(row["url"]), error)
+            if refusal is not None:
+                message, connect_url, needs_token = refusal
                 self.database.update_mcp_server_tools(
                     user_id, server_id, [], status="error", error=message,
                 )
@@ -454,8 +460,9 @@ class McpRuntime:
         except (ConversationMcpError, HTTPException):
             raise
         except Exception as error:
-            if _requires_publisher_sign_in(error):
-                message, connect_url, needs_token = await self._describe_refusal(str(row["url"]))
+            refusal = await self._refusal_after_discovery_failure(str(row["url"]), error)
+            if refusal is not None:
+                message, connect_url, needs_token = refusal
                 self.database.update_mcp_server_tools(
                     user_id, server_id, [], status="error", error=message,
                 )
@@ -468,20 +475,30 @@ class McpRuntime:
             logger.warning("MCP discovery failed for server %s (%s)", server_id, type(error).__name__)
             raise
 
-    async def _describe_refusal(self, endpoint: str) -> tuple[str, str | None, bool]:
+    async def _refusal_after_discovery_failure(
+        self, endpoint: str, error: BaseException,
+    ) -> tuple[str, str | None, bool] | None:
+        recognized = _requires_publisher_sign_in(error)
+        if not recognized and not _opaque_discovery_failure(error):
+            return None
+        connect_url, needs_token = await self._probe_access(endpoint)
+        if connect_url:
+            return _SIGN_IN_REQUIRED, connect_url, False
+        if needs_token:
+            return _TOKEN_REQUIRED, None, True
+        if recognized:
+            return _SIGN_IN_REQUIRED, None, False
+        return None
+
+    async def _probe_access(self, endpoint: str) -> tuple[str | None, bool]:
         try:
             connect_url, needs_token = await self.access_probe(
                 endpoint, allow_loopback=self.settings.mcp_allow_loopback,
             )
         except Exception as error:
             logger.warning("MCP publisher access probe failed (%s)", type(error).__name__)
-            connect_url, needs_token = None, False
-        connect_url = _public_https_link(connect_url, allow_loopback=self.settings.mcp_allow_loopback)
-        if connect_url:
-            return _SIGN_IN_REQUIRED, connect_url, False
-        if needs_token:
-            return _TOKEN_REQUIRED, None, True
-        return _SIGN_IN_REQUIRED, None, False
+            return None, False
+        return _public_https_link(connect_url, allow_loopback=self.settings.mcp_allow_loopback), bool(needs_token)
 
     async def _discover_tools(self, row: dict[str, object]) -> list[object]:
         await asyncio.to_thread(

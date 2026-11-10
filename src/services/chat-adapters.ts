@@ -217,7 +217,7 @@ export interface ChatAdapter {
   getConversationConnectors(conversationId: string): Promise<ConversationConnectorPreferences>
   setConversationConnectors(conversationId: string, connectorIds: string[]): Promise<ConversationConnectorPreferences>
   activateConversationMcp(conversationId: string, catalogId: string, authToken?: string): Promise<McpConversationActivation>
-  streamMessage(conversationId: string, content: string, signal: AbortSignal, connectorIds: string[], onDelta: (delta: string) => void, onExecution?: (execution: Execution) => void, onSuggestion?: (suggestions: McpSuggestion[]) => void, onMcpActivity?: (activity: McpActivity) => void, useConnectedTools?: boolean, resumeWithTools?: boolean): Promise<Message | null>
+  streamMessage(conversationId: string, content: string, signal: AbortSignal, connectorIds: string[], onDelta: (delta: string) => void, onExecution?: (execution: Execution) => void, onSuggestion?: (suggestions: McpSuggestion[]) => void, onMcpActivity?: (activity: McpActivity) => void, useConnectedTools?: boolean, resumeWithTools?: boolean, declineMcpSuggestions?: boolean): Promise<Message | null>
   checkHealth(): Promise<ChatBackendHealth>
 }
 
@@ -478,16 +478,17 @@ class OpenAIAdapter implements ChatAdapter {
     return this.request<ChatBackendHealth>('/health')
   }
 
-  async streamMessage(conversationId: string, content: string, signal: AbortSignal, connectorIds: string[], onDelta: (delta: string) => void, onExecution?: (execution: Execution) => void, onSuggestion?: (suggestions: McpSuggestion[]) => void, onMcpActivity?: (activity: McpActivity) => void, useConnectedTools = false, resumeWithTools = false) {
+  async streamMessage(conversationId: string, content: string, signal: AbortSignal, connectorIds: string[], onDelta: (delta: string) => void, onExecution?: (execution: Execution) => void, onSuggestion?: (suggestions: McpSuggestion[]) => void, onMcpActivity?: (activity: McpActivity) => void, useConnectedTools = false, resumeWithTools = false, declineMcpSuggestions = false) {
     let response: Response
     try {
       response = await fetch(`${this.baseUrl}/conversations/${encodeURIComponent(conversationId)}/messages/stream`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' }, credentials: 'include',
         body: JSON.stringify({
-          content: resumeWithTools ? '' : content,
+          content: resumeWithTools || declineMcpSuggestions ? '' : content,
           connector_ids: connectorIds,
           ...(useConnectedTools ? { use_connected_tools: true } : {}),
           ...(resumeWithTools ? { resume_with_tools: true } : {}),
+          ...(declineMcpSuggestions ? { decline_mcp_suggestions: true } : {}),
         }), signal,
       })
     } catch (error) {

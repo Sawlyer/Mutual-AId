@@ -100,7 +100,7 @@ function McpSuggestionCard({ suggestions, disabled, activatingId, onActivate, on
       {connectFor === item.id && connectUrl && <a href={connectUrl} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-4">Ouvrir la page de connexion</a>}
     </li>)}</ul>
     {localError && <p role="alert" className="mt-2 text-xs text-destructive">{localError}</p>}
-    <Button type="button" variant="ghost" size="sm" className="mt-2" onClick={onDismiss}>Plus tard</Button>
+    <Button type="button" variant="ghost" size="sm" className="mt-2" disabled={disabled || activatingId !== null} onClick={onDismiss}>Plus tard</Button>
   </div>
 }
 
@@ -391,6 +391,47 @@ export function ChatPage() {
   function dismissSuggestions() {
     if (activeConversationId) pendingMcpSuggestions.delete(activeConversationId)
     setMcpSuggestionState({ conversationId: activeConversationId, suggestions: [] })
+    if (chatAdapter.mode === 'openai' && activeConversationId) void continueWithoutSuggestedMcp(activeConversationId)
+  }
+
+  async function continueWithoutSuggestedMcp(conversationId: string) {
+    const controller = new AbortController()
+    activeRequest.current = controller
+    setRequestPending(true)
+    const pendingId = `local-assistant-${crypto.randomUUID()}`
+    const now = new Date().toISOString()
+    upsertRemoteMessage({ id: pendingId, conversationId, role: 'assistant', content: '', createdAt: now, status: 'streaming', simulated: false })
+    try {
+      const connectorIds = useOpenAIChatStore.getState().connectorIdsByConversation[conversationId] ?? []
+      const response = await chatAdapter.streamMessage(
+        conversationId, '', controller.signal, connectorIds,
+        (delta) => {
+          const current = useOpenAIChatStore.getState().messages.find((message) => message.id === pendingId)
+          if (current) upsertRemoteMessage({ ...current, content: current.content + delta })
+        },
+        undefined, undefined, (activity) => {
+          const current = useOpenAIChatStore.getState().messages.find((message) => message.id === pendingId)
+          if (current) upsertRemoteMessage(applyMcpActivity(current, activity))
+        }, false, false, true,
+      )
+      removeRemoteMessage(pendingId)
+      if (!response) throw new Error('La réponse n’a pas pu être reprise.')
+      upsertRemoteMessage(response)
+      try {
+        const preferences = await chatAdapter.getConversationConnectors(conversationId)
+        setRemoteConnectorIds(conversationId, preferences.connector_ids)
+      } catch { /* The reply is already visible. */ }
+      useOpenAIChatStore.getState().setConversations(await chatAdapter.listConversations())
+    } catch (error) {
+      const interrupted = error instanceof DOMException && error.name === 'AbortError'
+      const visibleMessage = interrupted ? 'Réponse interrompue.' : error instanceof Error ? error.message : 'La réponse n’a pas pu être reprise.'
+      const pendingMessage = useOpenAIChatStore.getState().messages.find((message) => message.id === pendingId)
+      if (pendingMessage) upsertRemoteMessage({ ...stopMcpActivity(pendingMessage), content: visibleMessage, status: 'failed' })
+      if (!interrupted) setChatError(visibleMessage)
+    } finally {
+      if (activeRequest.current === controller) activeRequest.current = null
+      setRequestPending(false)
+    }
   }
 
   async function handleConnectorIdsChange(connectorIds: string[]) {

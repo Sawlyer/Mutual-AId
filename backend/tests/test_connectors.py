@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -12,7 +13,15 @@ from cryptography.fernet import Fernet
 from pydantic import ValidationError
 import pytest
 
-from app.connectors.mcp_catalog import McpCatalog, parse_listing_html, qualify_listing_entry, refresh_catalog, write_catalog
+from app.connectors.mcp_catalog import (
+    McpCatalog,
+    parse_listing_html,
+    probe_remote_tools,
+    prune_catalog,
+    qualify_listing_entry,
+    refresh_catalog,
+    write_catalog,
+)
 from app.connectors.mcp_models import McpServerCreate
 from app.connectors.oauth import TokenVault
 
@@ -200,7 +209,7 @@ def test_refresh_adds_only_new_published_fiches(tmp_path):
             return 200, "<h2>Installation</h2><code>npx local-mcp</code>"
         raise AssertionError(url)
 
-    result = refresh_catalog(path, fetch=fetch)
+    result = refresh_catalog(path, fetch=fetch, probe=lambda endpoint: "tools")
     assert result == {"added": 1, "directory_available": True, "message": "1 nouvelle fiche."}
     assert all(not call.endswith("/servers/docs-search") for call in calls)
     added = McpCatalog(path).get("paid-api")
@@ -209,6 +218,161 @@ def test_refresh_adds_only_new_published_fiches(tmp_path):
     assert added["requires_token"] is True
     assert "evil.example" not in added["endpoint"]
     assert McpCatalog(path).get("local-only") is None
+
+
+def test_refresh_keeps_tools_and_auth_and_drops_empty_or_unreachable(tmp_path):
+    path = tmp_path / "catalog.sqlite3"
+    listing = """
+    <a href="/fr/servers/tools-api"><div data-slot="card"><div data-slot="card-title">Tools</div><div>Recherche</div>
+    <div data-slot="card-description">Outils publics.</div></div></a>
+    <a href="/fr/servers/auth-api"><div data-slot="card"><div data-slot="card-title">Auth</div><div>Recherche</div>
+    <div data-slot="card-description">Connexion requise.</div></div></a>
+    <a href="/fr/servers/empty-api"><div data-slot="card"><div data-slot="card-title">Empty</div><div>Recherche</div>
+    <div data-slot="card-description">Sans outil.</div></div></a>
+    <a href="/fr/servers/down-api"><div data-slot="card"><div data-slot="card-title">Down</div><div>Recherche</div>
+    <div data-slot="card-description">Injoignable.</div></div></a>
+    """
+    details = {
+        "/servers/tools-api": "<h2>Serveur MCP hébergé</h2><code>npx add-mcp 'https://1.1.1.1/mcp/tools'</code>",
+        "/servers/auth-api": "<h2>Serveur MCP hébergé</h2><code>npx add-mcp 'https://8.8.8.8/mcp/auth'</code>",
+        "/servers/empty-api": "<h2>Serveur MCP hébergé</h2><code>npx add-mcp 'https://8.8.4.4/mcp/empty'</code>",
+        "/servers/down-api": "<h2>Serveur MCP hébergé</h2><code>npx add-mcp 'https://9.9.9.9/mcp/down'</code>",
+    }
+
+    def fetch(url: str) -> tuple[int, str]:
+        if url.endswith("page=1"):
+            return 200, listing
+        if url.endswith("page=2"):
+            return 404, "missing"
+        for suffix, html in details.items():
+            if url.endswith(suffix):
+                return 200, html
+        raise AssertionError(url)
+
+    def probe(endpoint: str) -> str:
+        if endpoint.endswith("/auth"):
+            return "auth"
+        if endpoint.endswith("/empty"):
+            return "empty"
+        if endpoint.endswith("/down"):
+            raise OSError("unreachable")
+        return "tools"
+
+    result = refresh_catalog(path, fetch=fetch, probe=probe)
+    stored = {entry["id"] for entry in McpCatalog(path).entries()}
+
+    assert result["added"] == 2
+    assert stored == {"tools-api", "auth-api"}
+
+
+def test_probe_classifies_tools_auth_empty_and_unreachable():
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if host == "9.9.9.10":
+            raise httpx.ConnectError("down")
+        body = json.loads(request.content)
+        if host == "8.8.8.8":
+            return httpx.Response(401)
+        if host == "1.0.0.1":
+            challenge = 'Bearer resource_metadata="https://1.0.0.1/.well-known/oauth-protected-resource"'
+            return httpx.Response(401, headers={"www-authenticate": challenge})
+        if host == "9.9.9.9":
+            return httpx.Response(200, text="<html>not mcp</html>")
+        if body["method"] == "initialize":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2025-03-26", "capabilities": {}},
+                },
+                headers={"mcp-session-id": "sess-1"},
+            )
+        assert request.headers["mcp-session-id"] == "sess-1"
+        if host == "8.8.4.4":
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": 2, "result": {"tools": []}})
+        payload = {"jsonrpc": "2.0", "id": 2, "result": {"tools": [{"name": "search"}]}}
+        return httpx.Response(200, text=f"event: message\ndata: {json.dumps(payload)}\n\n")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert probe_remote_tools("https://1.1.1.1/mcp", client=client) == "tools"
+    assert probe_remote_tools("https://8.8.8.8/mcp", client=client) == "auth"
+    assert probe_remote_tools("https://1.0.0.1/mcp", client=client) == "empty"
+    assert probe_remote_tools("https://8.8.4.4/mcp", client=client) == "empty"
+    assert probe_remote_tools("https://9.9.9.9/mcp", client=client) == "empty"
+    assert probe_remote_tools("https://9.9.9.10/mcp", client=client) == "empty"
+    assert probe_remote_tools("http://127.0.0.1/mcp", client=client) == "empty"
+
+
+def _stored_fiche(entry_id: str, endpoint: str) -> dict[str, object]:
+    return {
+        "id": entry_id, "name": entry_id, "description": "Fiche.", "category": "Recherche",
+        "source_url": f"https://mcpservers.org/fr/servers/{entry_id}", "badges": [],
+        "endpoint": endpoint, "requires_token": False,
+    }
+
+
+def test_failed_server_disappears_when_its_fiche_is_removed(tmp_path):
+    catalog_path = tmp_path / "removed-catalog.sqlite3"
+    listing = {entry["id"]: entry for entry in parse_listing_html(LISTING_HTML)}
+    published = qualify_listing_entry(listing["docs-search"], HOSTED_PUBLIC)
+    write_catalog(catalog_path, [published])
+    settings = Settings(
+        database_path=tmp_path / "removed-account.sqlite3", openai_api_key="", openai_model="",
+        connector_token_encryption_key=Fernet.generate_key().decode(), mcp_catalog_path=catalog_path,
+    )
+    with TestClient(create_app(settings)) as client:
+        client.post("/api/auth/register", json={
+            "name": "Catalog", "email": "removed@example.com", "password": "removed test password long",
+        })
+        created = client.post("/api/connectors/mcp", json={
+            "name": "Docs", "url": "https://1.1.1.1/mcp", "catalog_id": "docs-search",
+        })
+        user_id = client.app.state.database.get_user_by_email("removed@example.com")["id"]
+        client.app.state.database.update_mcp_server_tools(
+            user_id, created.json()["id"], [], status="error",
+            error="Impossible de joindre ou d’inspecter ce serveur MCP.",
+        )
+        write_catalog(catalog_path, [])
+        listed = client.get("/api/connectors/mcp")
+
+    assert created.status_code == 201
+    assert listed.status_code == 200
+    assert listed.json() == []
+
+
+def test_prune_drops_empty_endpoints_and_keeps_auth(tmp_path):
+    path = tmp_path / "catalog.sqlite3"
+    write_catalog(path, [
+        _stored_fiche("tools-api", "https://1.1.1.1/mcp/tools"),
+        _stored_fiche("auth-api", "https://8.8.8.8/mcp/auth"),
+        _stored_fiche("empty-api", "https://8.8.4.4/mcp/empty"),
+    ])
+
+    def probe(endpoint: str) -> str:
+        if endpoint.endswith("/auth"):
+            return "auth"
+        if endpoint.endswith("/empty"):
+            return "empty"
+        return "tools"
+
+    result = prune_catalog(path, probe=probe, workers=1)
+    stored = {entry["id"] for entry in McpCatalog(path).entries()}
+
+    assert result == {"kept": 2, "removed": 1, "skipped": False}
+    assert stored == {"tools-api", "auth-api"}
+
+
+def test_prune_keeps_the_snapshot_when_every_probe_fails(tmp_path):
+    path = tmp_path / "catalog.sqlite3"
+    write_catalog(path, [_stored_fiche("tools-api", "https://1.1.1.1/mcp/tools")])
+
+    result = prune_catalog(path, probe=lambda endpoint: "empty", workers=1, allow_empty=False)
+
+    assert result["skipped"] is True
+    assert result["removed"] == 0
+    assert McpCatalog(path).get("tools-api") is not None
 
 
 def test_catalog_refresh_route_reports_a_directory_refusal(tmp_path, monkeypatch):

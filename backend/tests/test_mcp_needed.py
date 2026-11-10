@@ -321,3 +321,55 @@ def test_activation_resumes_the_original_request_without_a_new_prompt(tmp_path, 
     assert messages[0]["content"] == question
     assert messages[1]["content"] == "Donnée lue."
     assert "J’ai activé le serveur MCP" not in response.text
+
+
+def test_declining_a_suggestion_answers_the_original_request(tmp_path, monkeypatch):
+    catalog_path = tmp_path / "decline.sqlite3"
+    build_catalog(catalog_path)
+    settings = Settings(
+        database_path=tmp_path / "decline.sqlite3",
+        openai_api_key="test-key", openai_model="test-model",
+        mcp_catalog_path=catalog_path,
+    )
+    called = {"content": None, "route": 0}
+
+    async def fake_route(*_args, **_kwargs):
+        called["route"] += 1
+        return SimpleNamespace(requires_orchestration=False, summary="", tasks=[])
+
+    async def fake_stream(*args, **_kwargs):
+        called["content"] = args[1]
+        yield "Réponse sans serveur."
+
+    monkeypatch.setattr("app.main.stream_assistant", fake_stream)
+    question = "Je veux des informations sur le Solana Data"
+    with TestClient(create_app(settings)) as client:
+        monkeypatch.setattr(client.app.state.request_router, "route", fake_route)
+        client.post("/api/auth/register", json={
+            "name": "Decline", "email": "decline@example.com", "password": "decline password long enough",
+        })
+        conversation = client.post("/api/conversations", json={}).json()
+        proposal = client.post(
+            f"/api/conversations/{conversation['id']}/messages/stream",
+            json={"content": question},
+        )
+        both = client.post(
+            f"/api/conversations/{conversation['id']}/messages/stream",
+            json={"content": "", "resume_with_tools": True, "decline_mcp_suggestions": True},
+        )
+        response = client.post(
+            f"/api/conversations/{conversation['id']}/messages/stream",
+            json={"content": "", "decline_mcp_suggestions": True},
+        )
+        messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
+
+    assert proposal.status_code == 200
+    assert "suggestions_only" in proposal.text
+    assert both.status_code == 422
+    assert response.status_code == 200
+    assert "event: mcp.suggestion" not in response.text
+    assert called["content"] == question
+    assert called["route"] == 1
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[0]["content"] == question
+    assert messages[1]["content"] == "Réponse sans serveur."

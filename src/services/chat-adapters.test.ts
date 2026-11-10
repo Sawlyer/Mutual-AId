@@ -110,4 +110,24 @@ describe('MCP server adapter', () => {
       expect((error as ChatServiceError).connectUrl).toBeUndefined()
     }
   })
+
+  it('asks the backend to answer without the suggested MCP servers', async () => {
+    const done = {
+      message: {
+        id: 'message-id', conversation_id: 'conversation-id', role: 'assistant', content: 'Réponse.',
+        created_at: '2026-01-01T00:00:00Z',
+      },
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(`event: done\ndata: ${JSON.stringify(done)}\n\n`, {
+      status: 200, headers: { 'Content-Type': 'text/event-stream' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await chatAdapter.streamMessage('conversation-id', 'ignoré', new AbortController().signal, [], () => undefined, undefined, undefined, undefined, false, false, true)
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/conversations/conversation-id/messages/stream', expect.objectContaining({
+      method: 'POST', credentials: 'include',
+      body: JSON.stringify({ content: '', connector_ids: [], decline_mcp_suggestions: true }),
+    }))
+  })
 })

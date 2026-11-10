@@ -143,7 +143,7 @@ export function McpCatalogPage() {
         <div>
           <p className="text-sm text-muted-foreground">Connecteurs</p>
           <h2 className="mt-0.5 font-heading text-2xl font-semibold tracking-tight">Catalogue MCP</h2>
-          <p className="mt-1 max-w-2xl text-sm leading-relaxed text-muted-foreground">Seuls les serveurs distants gratuits dont l’éditeur publie une adresse sont listés. L’activation utilise cette adresse, et demande un jeton uniquement lorsque la fiche l’exige.</p>
+          <p className="mt-1 max-w-2xl text-sm leading-relaxed text-muted-foreground">Seuls les serveurs distants gratuits et publiés sont listés, lorsqu’ils répondent avec au moins un outil. Une adresse injoignable, sans outil, ou qui exige une connexion OAuth non prise en charge, est écartée. Une fiche qui demande un jeton reste visible, et l’activation ne le demande que dans ce cas.</p>
         </div>
       </div>
       <Button variant="outline" size="sm" render={<Link to="/connectors" />}>Retour aux connecteurs</Button>
