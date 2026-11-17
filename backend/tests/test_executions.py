@@ -107,6 +107,52 @@ def test_final_execution_message_is_updated_when_a_run_resumes(tmp_path):
     assert [message.content for message in messages] == ["Exécution interrompue", "Exécution terminée"]
 
 
+def test_initial_agent_selection_is_persisted_as_a_visible_execution_event(tmp_path):
+    db = Database(tmp_path / "execution.sqlite3")
+    db.initialize()
+    conversation = db.create_conversation("Test", "owner-id")
+    repo = ExecutionRepository(db)
+    plan = ExecutionPlan(summary="Plan", tasks=[
+        PlannedTask(
+            id="collect",
+            title="Collecter les disponibilités",
+            agent_profile_id="calendar-specialist",
+            agent_assignment_reason="Profil créé automatiquement : aucun agent actif ne couvrait agenda.",
+        ),
+    ])
+
+    execution = repo.create("owner-id", conversation.id, plan)
+    event = next(event for event in repo.list_events("owner-id", execution.id) if event.event_type == "task.assigned")
+
+    assert event.event_type == "task.assigned"
+    assert event.task_id == "collect"
+    assert event.agent_id == "calendar-specialist"
+    assert "créé automatiquement" in event.message
+
+
+def test_internal_failed_task_can_be_replanned_once_but_external_task_cannot(tmp_path):
+    db = Database(tmp_path / "replan.sqlite3")
+    db.initialize()
+    conversation = db.create_conversation("Test", "owner-id")
+    repo = ExecutionRepository(db)
+    execution = repo.create("owner-id", conversation.id, ExecutionPlan(summary="Plan", tasks=[
+        PlannedTask(id="internal", title="Calculer"),
+        PlannedTask(id="external", title="Écrire", connector_ids=["github"]),
+    ]))
+    repo.transition_task("owner-id", execution.id, "internal", "failed", "Erreur contrôlée")
+    repo.transition_task("owner-id", execution.id, "external", "failed", "Action externe incertaine")
+
+    revised = repo.replan_failed_task("owner-id", execution.id, "internal", "Instructions révisées", "Approche simplifiée")
+    refused_external = repo.replan_failed_task("owner-id", execution.id, "external", "Réessayer", "Ne doit pas être autorisé")
+    refused_twice = repo.replan_failed_task("owner-id", execution.id, "internal", "Encore", "Ne doit pas être autorisé")
+
+    assert revised is not None and revised.status == "ready"
+    assert revised.description == "Instructions révisées"
+    assert refused_external is None
+    assert refused_twice is None
+    assert [event.event_type for event in repo.list_events("owner-id", execution.id)].count("task.replanned") == 1
+
+
 def test_task_transition_persists_event_and_cursor(tmp_path):
     db = Database(tmp_path / "execution.sqlite3")
     db.initialize()
@@ -183,7 +229,7 @@ def test_scheduler_runs_parallel_tasks_and_waits_for_dependencies(tmp_path):
     asyncio.run(DagScheduler(repo, execute, "owner-id", execution.id, max_concurrency=2).run())
     assert order.index(("a", "end")) < order.index(("c", "start"))
     assert order.index(("b", "end")) < order.index(("c", "start"))
-    assert repo.get("owner-id", execution.id).status == "completed"
+    assert repo.get("owner-id", execution.id).status == "validating"
 
 
 def test_scheduler_pauses_at_task_boundary_without_starting_dependents(tmp_path):
@@ -318,6 +364,128 @@ def test_scheduler_retries_only_tasks_without_external_connectors(tmp_path):
     updated = repo.get("owner-id", execution.id)
     assert {task.id: task.attempts for task in updated.tasks} == {"safe": 2, "external": 1}
     assert sum(event.event_type == "task.retrying" for event in repo.list_events("owner-id", execution.id)) == 1
+
+
+def test_scheduler_replans_failed_internal_task_once_without_replaying_dependencies(tmp_path):
+    from app.executions.scheduler import DagScheduler
+
+    db = Database(tmp_path / "execution-replan.sqlite3")
+    db.initialize()
+    conversation = db.create_conversation("Test", "owner-id")
+    repo = ExecutionRepository(db)
+    execution = repo.create("owner-id", conversation.id, ExecutionPlan(summary="Plan", tasks=[
+        PlannedTask(id="source", title="Source"),
+        PlannedTask(id="draft", title="Rédiger", dependencies=["source"]),
+    ]))
+    calls = {"source": 0, "draft": 0}
+    revisions = []
+
+    async def handler(task):
+        calls[task.id] += 1
+        if task.id == "draft" and calls[task.id] == 1:
+            raise ValueError("failure detail stays private")
+        return f"result-{task.id}"
+
+    async def revise(task, failure_type):
+        revisions.append((task.id, failure_type))
+        return ("Use a smaller, directly structured answer.", "Approche simplifiée")
+
+    asyncio.run(DagScheduler(
+        repo, handler, "owner-id", execution.id, max_attempts=1, replanner=revise,
+    ).run())
+
+    updated = repo.get("owner-id", execution.id)
+    assert calls == {"source": 1, "draft": 2}
+    assert revisions == [("draft", "ValueError")]
+    assert next(task for task in updated.tasks if task.id == "draft").status == "completed"
+    assert next(task for task in updated.tasks if task.id == "draft").description == "Use a smaller, directly structured answer."
+    assert [event.event_type for event in repo.list_events("owner-id", execution.id)].count("task.replanned") == 1
+    assert "failure detail stays private" not in str(updated.model_dump())
+
+
+def test_scheduler_does_not_replan_after_pause_or_cancel_is_requested(tmp_path):
+    from app.executions.scheduler import DagScheduler
+
+    async def exercise(request_kind):
+        db = Database(tmp_path / f"execution-{request_kind}.sqlite3")
+        db.initialize()
+        conversation = db.create_conversation("Test", "owner-id")
+        repo = ExecutionRepository(db)
+        execution = repo.create("owner-id", conversation.id, ExecutionPlan(summary="Plan", tasks=[
+            PlannedTask(id="internal", title="Tâche interne"),
+        ]))
+        signal = asyncio.Event()
+        revisions = []
+
+        async def handler(_task):
+            signal.set()
+            raise RuntimeError("controlled failure")
+
+        async def revise(task, failure_type):
+            revisions.append((task.id, failure_type))
+            return ("retry", "retry")
+
+        scheduler = DagScheduler(
+            repo, handler, "owner-id", execution.id, max_attempts=1,
+            cancel_event=signal if request_kind == "cancel" else None,
+            pause_event=signal if request_kind == "pause" else None,
+            replanner=revise,
+        )
+        await scheduler._run_task(execution.tasks[0], asyncio.Semaphore(1))
+        assert revisions == []
+
+    asyncio.run(exercise("pause"))
+    asyncio.run(exercise("cancel"))
+
+
+def test_scheduler_does_not_restart_replanned_task_if_pause_arrives_during_revision(tmp_path):
+    from app.executions.scheduler import DagScheduler
+
+    db = Database(tmp_path / "execution-pause-during-revision.sqlite3")
+    db.initialize()
+    conversation = db.create_conversation("Test", "owner-id")
+    repo = ExecutionRepository(db)
+    execution = repo.create("owner-id", conversation.id, ExecutionPlan(summary="Plan", tasks=[
+        PlannedTask(id="internal", title="Tâche interne"),
+    ]))
+    pause_event = asyncio.Event()
+    revision_started = asyncio.Event()
+    release_revision = asyncio.Event()
+    calls = 0
+
+    async def handler(_task):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("controlled failure")
+        return "result after resume"
+
+    async def revise(_task, _failure_type):
+        revision_started.set()
+        await release_revision.wait()
+        return ("Instructions révisées", "Approche simplifiée")
+
+    scheduler = DagScheduler(
+        repo, handler, "owner-id", execution.id, max_attempts=1,
+        pause_event=pause_event, replanner=revise,
+    )
+
+    async def exercise():
+        running = asyncio.create_task(scheduler.run())
+        await asyncio.wait_for(revision_started.wait(), timeout=1)
+        pause_event.set()
+        release_revision.set()
+        await running
+        assert repo.get("owner-id", execution.id).status == "paused"
+        pause_event.clear()
+        await scheduler.run()
+
+    asyncio.run(exercise())
+
+    assert calls == 2
+    assert repo.has_task_event("owner-id", execution.id, "internal", "task.replanned")
+    assert repo.get("owner-id", execution.id).tasks[0].status == "completed"
+    assert repo.get("owner-id", execution.id).tasks[0].description == "Instructions révisées"
 
 
 def test_scheduler_times_out_a_task_and_exposes_only_generic_failure(tmp_path):

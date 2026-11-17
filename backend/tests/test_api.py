@@ -334,6 +334,42 @@ def test_execution_stream_replays_events_and_artifacts_are_downloadable(tmp_path
     assert foreign_artifact.status_code == 404
 
 
+def test_cancelled_execution_reconnects_from_last_event_id_without_replaying_cursor(tmp_path):
+    from app.executions.repository import ExecutionRepository
+    from app.planning.schemas import ExecutionPlan, PlannedTask
+
+    with make_client(tmp_path) as client:
+        conversation = client.post("/api/conversations", json={}).json()
+        owner_id = client.get("/api/auth/me").json()["id"]
+        repository = ExecutionRepository(client.app.state.database)
+        execution = repository.create(
+            owner_id,
+            conversation["id"],
+            ExecutionPlan(summary="Annulation et reprise SSE", tasks=[
+                PlannedTask(id="work", title="Traiter la demande"),
+            ]),
+        )
+        initial_cursor = repository.list_events(owner_id, execution.id)[-1].id
+        repository.set_execution_status(owner_id, execution.id, "running", "Exécution démarrée")
+        repository.transition_task(owner_id, execution.id, "work", "running", "Agent au travail")
+        reconnect_cursor = repository.list_events(owner_id, execution.id)[-1].id
+
+        cancelled = client.post(f"/api/executions/{execution.id}/cancel")
+        stream = client.get(
+            f"/api/executions/{execution.id}/stream?after_id={initial_cursor}",
+            headers={"Last-Event-ID": str(reconnect_cursor)},
+        )
+
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert stream.status_code == 200
+    assert f"id: {reconnect_cursor}\n" not in stream.text
+    assert "event: execution.event" in stream.text
+    assert "execution.cancelled" in stream.text
+    assert '"status":"cancelled"' in stream.text
+    assert "event: execution.terminal" in stream.text
+
+
 def test_analytics_are_calculated_from_owner_scoped_records(tmp_path):
     from fastapi.testclient import TestClient
     from app.executions.repository import ExecutionRepository

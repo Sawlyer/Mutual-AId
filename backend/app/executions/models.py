@@ -2,8 +2,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-ExecutionStatus = Literal["planning", "running", "pausing", "paused", "awaiting_approval", "completed", "partial", "failed", "cancelled", "interrupted"]
+ExecutionStatus = Literal["planning", "running", "pausing", "paused", "awaiting_approval", "validating", "completed", "partial", "failed", "cancelled", "interrupted"]
 TaskStatus = Literal["pending", "ready", "running", "awaiting_approval", "validating", "completed", "failed", "blocked", "paused", "interrupted", "cancelled"]
+ResultReviewStatus = Literal["pending", "verified", "needs_review", "unavailable", "skipped"]
 
 
 class TaskRead(BaseModel):
@@ -32,6 +33,8 @@ class ExecutionRead(BaseModel):
     status: ExecutionStatus
     summary: str
     tasks: list[TaskRead]
+    result_review_status: ResultReviewStatus = "pending"
+    result_review_feedback: str | None = None
     created_at: str
     updated_at: str
 

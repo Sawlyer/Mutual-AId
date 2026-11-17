@@ -153,6 +153,14 @@ Pour activer Google, créez un client OAuth de type application Web dans Google 
 
 Pour GitHub, créez une OAuth App dans les paramètres développeur, inscrivez `http://127.0.0.1:8000/api/connectors/github/callback` comme callback, puis définissez `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` et `GITHUB_APP_REDIRECT_URI` dans `backend/.env`. GitHub ne demande que les permissions de lecture nécessaires aux dépôts et issues. Conservez tous les secrets uniquement dans `backend/.env` et redémarrez le backend après configuration. La page Connecteurs affichera les services correctement configurés et permettra de lancer/retirer leur connexion.
 
+## Scénario de démonstration MVP
+
+Connectez GitHub, sélectionnez-le dans le composer, puis demandez :
+
+> Dans `Sawlyer/Mutual-AId`, analyse les issues ouvertes. Regroupe-les par thème, indique les blocages et propose trois prochaines actions avec les numéros d’issues. N’effectue aucune modification.
+
+Dans le workflow, montrez le choix ou la création de l’agent GitHub, la tâche de lecture autorisée, puis la revue indépendante du résultat. Les événements affichent les décisions d’affectation ; l’exécution n’écrit rien sur GitHub et ne relance pas automatiquement une action externe. Pour comparer, soumettez la même demande à une réponse simple sans connecteur : elle ne peut pas consulter l’état actuel du dépôt. Cette comparaison rend visible la valeur ajoutée de l’orchestration et de l’accès autorisé aux données.
+
 ## Vérifications
 
 Frontend, à la racine :
