@@ -3,6 +3,7 @@ import logging
 from typing import Protocol
 
 from agents import Agent, RunConfig, Runner
+from pydantic import BaseModel, Field
 
 from app.agents.service import AgentService
 from app.config import Settings
@@ -19,6 +20,11 @@ from app.planning.schemas import ExecutionPlan
 
 logger = logging.getLogger(__name__)
 RESULT_REVIEW_TIMEOUT_SECONDS = 30
+
+
+class TaskRevision(BaseModel):
+    description: str = Field(min_length=1, max_length=4000)
+    summary: str = Field(min_length=1, max_length=300)
 
 
 class ResultReviewer(Protocol):
@@ -100,6 +106,40 @@ class AgentTaskExecutor:
             raise RuntimeError("Task returned no user-facing result")
         return output.strip()
 
+    async def revise(self, task: TaskRead, failure_type: str) -> tuple[str, str]:
+        """Revise one failed internal task without exposing tools or private chain of thought."""
+        if not self.settings.openai_configured:
+            raise RuntimeError("AI provider unavailable")
+        if task.connector_ids or task.approval_required:
+            raise RuntimeError("Tasks with external side effects cannot be replanned automatically")
+        agent = Agent(
+            name="Task Replanner",
+            instructions=(
+                "Revise an internal task instruction after a failed attempt. Preserve the user's objective and expected output. "
+                "Return only a concise actionable instruction and a short user-visible summary of the adjustment. "
+                "Do not include private reasoning, request tools, invent evidence, or change task dependencies."
+            ),
+            model=self.settings.openai_model.strip(),
+            output_type=TaskRevision,
+        )
+        prompt = (
+            f"Task title: {task.title[:300]}\n"
+            f"Current instruction: {task.description[:4000]}\n"
+            f"Expected output: {task.expected_output[:500]}\n"
+            f"Previous failure category: {failure_type[:80]}\n"
+            "Suggest one bounded alternative approach. The failure message itself is intentionally not provided."
+        )
+        result = await Runner.run(
+            agent,
+            prompt,
+            max_turns=1,
+            run_config=RunConfig(tracing_disabled=True),
+        )
+        output = result.final_output
+        if not isinstance(output, TaskRevision):
+            raise RuntimeError("Task revision returned an invalid response")
+        return output.description.strip(), output.summary.strip()
+
 
 class ExecutionCoordinator:
     def __init__(self, repository: ExecutionRepository, agent_service: AgentService, settings: Settings,
@@ -163,7 +203,7 @@ class ExecutionCoordinator:
 
         scheduler = DagScheduler(self.repository, execute_with_user_limit, user_id, execution_id,
                                  max_concurrency=self.settings.max_parallel_tasks, cancel_event=cancel_event,
-                                 pause_event=pause_event)
+                                 pause_event=pause_event, replanner=getattr(handler, "revise", None))
         try:
             await scheduler.run()
             current = self.repository.get(user_id, execution_id)

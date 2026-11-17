@@ -23,6 +23,7 @@ class PlannedTask(BaseModel):
     dependencies: list[str] = Field(default_factory=list, max_length=30)
     capability_ids: list[str] = Field(default_factory=list, max_length=10)
     agent_profile_id: str | None = None
+    agent_assignment_reason: str = Field(default="", max_length=300)
     connector_ids: list[str] = Field(default_factory=list, max_length=5)
     expected_output: str = Field(default="", max_length=500)
     approval_required: bool = False

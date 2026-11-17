@@ -66,6 +66,10 @@ def test_router_creates_missing_specialist_and_rejects_unknown_connector(tmp_pat
     result = asyncio.run(router.route(request, [], []))
     assert result.tasks[0].agent_profile_id
     assert result.tasks[0].agent_profile_id == database.list_agent_profiles("u")[0]["id"]
+    assert "créé automatiquement" in result.tasks[0].agent_assignment_reason.lower()
+    reused = asyncio.run(router.route(request, AgentService(database).list_profiles("u"), []))
+    assert reused.tasks[0].agent_profile_id == result.tasks[0].agent_profile_id
+    assert "réutilisé" in reused.tasks[0].agent_assignment_reason.lower()
 
     class BadConnectorPlanner:
         async def plan(self, *_args):

@@ -80,6 +80,7 @@ class ExecutionRepository:
                 "INSERT INTO executions (id, user_id, conversation_id, status, summary, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (execution_id, user_id, conversation_id, "running", plan.summary, timestamp, timestamp),
             )
+            self._record_event(connection, user_id, execution_id, None, "execution.created", plan.summary, timestamp)
             for task in plan.tasks:
                 approval_id = str(uuid4()) if task.approval_required else None
                 connection.execute(
@@ -99,7 +100,16 @@ class ExecutionRepository:
                         "INSERT INTO execution_approvals (id, execution_id, task_id, user_id, decision, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
                         (approval_id, execution_id, task.id, user_id, timestamp),
                     )
-            self._record_event(connection, user_id, execution_id, None, "execution.created", plan.summary, timestamp)
+                if task.agent_profile_id and task.agent_assignment_reason:
+                    self._record_event(
+                        connection,
+                        user_id,
+                        execution_id,
+                        task.id,
+                        "task.assigned",
+                        task.agent_assignment_reason,
+                        timestamp,
+                    )
             result = self._read(connection, user_id, execution_id)
         assert result is not None
         return result
@@ -131,6 +141,45 @@ class ExecutionRepository:
             if cursor.rowcount != 1:
                 raise LookupError("Task not found")
             self._record_event(connection, user_id, execution_id, task_id, event_type, detail or status, timestamp, status)
+            row = connection.execute(
+                "SELECT * FROM execution_tasks WHERE user_id = ? AND execution_id = ? AND id = ?",
+                (user_id, execution_id, task_id),
+            ).fetchone()
+            connection.execute("UPDATE executions SET updated_at = ? WHERE user_id = ? AND id = ?", (timestamp, user_id, execution_id))
+        return self._task(row)
+
+    def replan_failed_task(self, user_id: str, execution_id: str, task_id: str,
+                           description: str, summary: str) -> TaskRead | None:
+        """Requeue one internal task once; never retry a possible external side effect."""
+        description = description.strip()[:4000]
+        summary = summary.strip()[:300]
+        if not description or not summary:
+            return None
+        timestamp = utc_now()
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM execution_tasks WHERE user_id = ? AND execution_id = ? AND id = ?",
+                (user_id, execution_id, task_id),
+            ).fetchone()
+            if row is None or row["status"] != "failed" or row["approval_required"]:
+                return None
+            if json.loads(row["connector_ids_json"]):
+                return None
+            already_replanned = connection.execute(
+                "SELECT 1 FROM execution_events WHERE user_id = ? AND execution_id = ? AND task_id = ? AND event_type = 'task.replanned' LIMIT 1",
+                (user_id, execution_id, task_id),
+            ).fetchone()
+            if already_replanned:
+                return None
+            connection.execute(
+                "UPDATE execution_tasks SET description = ?, status = 'ready', error = NULL, updated_at = ? WHERE user_id = ? AND execution_id = ? AND id = ?",
+                (description, timestamp, user_id, execution_id, task_id),
+            )
+            self._record_event(
+                connection, user_id, execution_id, task_id, "task.replanned",
+                f"Consigne ajustée après échec : {summary}", timestamp, "ready",
+            )
             row = connection.execute(
                 "SELECT * FROM execution_tasks WHERE user_id = ? AND execution_id = ? AND id = ?",
                 (user_id, execution_id, task_id),
@@ -333,6 +382,13 @@ class ExecutionRepository:
                 (user_id, execution_id, after_id, after_id, max(1, min(limit, 500))),
             ).fetchall()
         return [ExecutionEventRead(**dict(row)) for row in rows]
+
+    def has_task_event(self, user_id: str, execution_id: str, task_id: str, event_type: str) -> bool:
+        with self.database.connection() as connection:
+            return connection.execute(
+                "SELECT 1 FROM execution_events WHERE user_id = ? AND execution_id = ? AND task_id = ? AND event_type = ? LIMIT 1",
+                (user_id, execution_id, task_id, event_type),
+            ).fetchone() is not None
 
     def list_artifacts(self, user_id: str, execution_id: str) -> list[ExecutionArtifactRead]:
         with self.database.connection() as connection:
