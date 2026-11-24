@@ -1,12 +1,22 @@
 import { useEffect, useState } from 'react'
-import { Activity, Bot, CircleAlert, LoaderCircle, MessagesSquare, Workflow } from 'lucide-react'
+import { Activity, Bot, ChartNoAxesCombined, CircleAlert, LoaderCircle, MessagesSquare, Workflow } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { analyticsService, type AnalyticsSummary } from '@/services/analytics-service'
+import { scaleExecutionActivity } from './analytics-utils'
 
 const statusLabels: Record<string, string> = {
   pending: 'En attente', ready: 'Prête', running: 'En cours', awaiting_approval: 'Approbation requise',
   validating: 'Validation', completed: 'Terminée', failed: 'Échec', blocked: 'Bloquée', paused: 'En pause', interrupted: 'Interrompue', cancelled: 'Annulée',
 }
+
+const statusColors: Record<string, string> = {
+  completed: 'bg-emerald-500', running: 'bg-violet-500', ready: 'bg-blue-500', pending: 'bg-muted-foreground/50',
+  failed: 'bg-destructive', blocked: 'bg-amber-500', validating: 'bg-amber-400', awaiting_approval: 'bg-amber-400',
+  paused: 'bg-slate-400', interrupted: 'bg-rose-400', cancelled: 'bg-slate-400',
+}
+
+const chartWidth = 560
+const chartHeight = 132
 
 export function AnalyticsPage() {
   const [metrics, setMetrics] = useState<AnalyticsSummary | null>(null)
@@ -26,17 +36,69 @@ export function AnalyticsPage() {
     { label: 'Exécutions actives', value: metrics.active_executions, icon: Activity },
     { label: 'Tâches terminées', value: `${metrics.completed_tasks} / ${metrics.tasks}`, icon: Bot },
   ] : []
-  const maxStatus = Math.max(1, ...Object.values(metrics?.task_statuses ?? {}))
-  return <div className="mx-auto max-w-4xl space-y-6">
-    <header><p className="text-sm text-muted-foreground">Mesure d’activité</p><h2 className="mt-1 font-heading text-2xl font-semibold tracking-tight">Analytics</h2><p className="mt-1 text-sm text-muted-foreground">Statistiques calculées depuis les conversations et tâches de votre compte.</p></header>
+  const activity = scaleExecutionActivity(metrics?.execution_activity ?? [], chartWidth, chartHeight)
+  const activityTotal = metrics?.execution_activity.reduce((sum, point) => sum + point.count, 0) ?? 0
+  const line = activity.map(({ x, y }) => `${x},${y}`).join(' ')
+
+  return <div className="mx-auto max-w-6xl space-y-6">
+    <header className="space-y-1">
+      <p className="text-sm text-muted-foreground">Mesure d’activité</p>
+      <h2 className="font-heading text-2xl font-semibold tracking-tight">Analytics</h2>
+      <p className="text-sm text-muted-foreground">Suivez l’activité et les résultats de vos orchestrations.</p>
+    </header>
     {loading && <div role="status" className="flex items-center gap-2 py-10 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Calcul des indicateurs…</div>}
     {!loading && error && <p role="alert" className="flex items-center gap-2 rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive"><CircleAlert className="size-4" />{error}</p>}
     {!loading && !error && metrics && <>
-      <section aria-label="Indicateurs principaux" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{stats.map(({ label, value, icon: Icon }) => <Card key={label}><CardContent className="flex items-center gap-3 p-4"><span className="grid size-9 place-items-center rounded-lg bg-primary/10 text-primary"><Icon className="size-4" /></span><div><p className="text-xs text-muted-foreground">{label}</p><p className="mt-0.5 text-xl font-semibold tabular-nums">{value}</p></div></CardContent></Card>)}</section>
-      <Card><CardContent className="space-y-5 p-5"><div><h2 className="font-semibold">Répartition des tâches</h2><p className="mt-1 text-sm text-muted-foreground">État courant des {metrics.tasks} tâches persistées.</p></div>
-        {metrics.tasks === 0 ? <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Aucune tâche enregistrée. Les indicateurs apparaîtront après votre première orchestration.</p> : <div className="space-y-3">{Object.entries(metrics.task_statuses).sort(([left], [right]) => left.localeCompare(right)).map(([status, count]) => <div key={status} className="grid grid-cols-[130px_minmax(0,1fr)_36px] items-center gap-3 text-sm"><span className="truncate text-muted-foreground">{statusLabels[status] ?? status}</span><div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${count / maxStatus * 100}%` }} /></div><span className="text-right tabular-nums">{count}</span></div>)}</div>}
+      <section aria-label="Indicateurs principaux" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {stats.map(({ label, value, icon: Icon }) => <Card key={label}><CardContent className="flex items-center gap-3 p-4">
+          <span className="grid size-9 place-items-center rounded-lg bg-primary/10 text-primary"><Icon className="size-4" /></span>
+          <div><p className="text-xs text-muted-foreground">{label}</p><p className="mt-0.5 text-xl font-semibold tabular-nums">{value}</p></div>
+        </CardContent></Card>)}
+      </section>
+
+      <Card><CardContent className="space-y-5 p-5 sm:p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div><h2 className="font-heading font-semibold">Activité des exécutions</h2><p className="mt-1 text-sm text-muted-foreground">Nombre d’exécutions lancées par jour · 14 derniers jours</p></div>
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><ChartNoAxesCombined className="size-4" /></span>
+        </div>
+        {activityTotal === 0 ? <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Aucune exécution sur cette période. Lancez une orchestration pour voir son activité ici.</p> : <>
+          <div className="overflow-hidden">
+            <svg className="h-auto w-full overflow-visible text-primary" viewBox={`-4 -8 ${chartWidth + 8} ${chartHeight + 20}`} role="img" aria-label={`Activité quotidienne des exécutions, ${activityTotal} au total sur 14 jours`}>
+              {[0, 0.5, 1].map((ratio) => <line key={ratio} x1="0" x2={chartWidth} y1={ratio * chartHeight} y2={ratio * chartHeight} className="stroke-border" strokeDasharray="3 5" />)}
+              {activity.length > 1 && <polyline points={line} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
+              {activity.map(({ date, count, x, y }) => <circle key={date} cx={x} cy={y} r={count ? 3.5 : 2} fill="currentColor" stroke="var(--card)" strokeWidth="2"><title>{new Intl.DateTimeFormat('fr-FR', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(`${date}T00:00:00Z`))} : {count} exécution{count > 1 ? 's' : ''}</title></circle>)}
+            </svg>
+          </div>
+          <div className="flex justify-between text-xs text-muted-foreground"><span>{activity[0] && new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(`${activity[0].date}T00:00:00Z`))}</span><span>Aujourd’hui</span></div>
+        </>}
       </CardContent></Card>
-      <p className="text-xs text-muted-foreground">Le taux de complétion global est de {metrics.task_completion_percent} %. Les statistiques reflètent uniquement votre compte.</p>
+
+      <section aria-label="Répartition par statut" className="grid gap-4 lg:grid-cols-2">
+        <StatusBreakdown title="Statut des exécutions" description={`${metrics.executions} exécution${metrics.executions > 1 ? 's' : ''} au total`} statuses={metrics.execution_statuses} />
+        <StatusBreakdown title="Statut des tâches" description={`${metrics.tasks} tâche${metrics.tasks > 1 ? 's' : ''} au total`} statuses={metrics.task_statuses} />
+      </section>
+      <p className="text-xs text-muted-foreground">Le taux de complétion des tâches est de {metrics.task_completion_percent} %. Ces statistiques reflètent uniquement votre compte.</p>
     </>}
   </div>
+}
+
+function StatusBreakdown({ title, description, statuses }: { title: string; description: string; statuses: Record<string, number> }) {
+  const entries = Object.entries(statuses).filter(([, count]) => count > 0).sort(([left], [right]) => left.localeCompare(right))
+  const total = entries.reduce((sum, [, count]) => sum + count, 0)
+  return <Card><CardContent className="space-y-5 p-5 sm:p-6">
+    <div><h2 className="font-heading font-semibold">{title}</h2><p className="mt-1 text-sm text-muted-foreground">{description}</p></div>
+    {!total ? <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Aucune donnée disponible.</p> : <>
+      <div className="flex h-2.5 overflow-hidden rounded-full bg-muted" role="img" aria-label={`Répartition des statuts : ${entries.map(([status, count]) => `${statusLabels[status] ?? status}, ${count}`).join('; ')}`}>
+        {entries.map(([status, count]) => <span key={status} className={`${statusColors[status] ?? 'bg-primary'} h-full`} style={{ width: `${count / total * 100}%` }} />)}
+      </div>
+      <ul className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+        {entries.map(([status, count]) => <li key={status} className="flex min-w-0 items-center gap-2 text-sm">
+          <span aria-hidden="true" className={`size-2.5 shrink-0 rounded-full ${statusColors[status] ?? 'bg-primary'}`} />
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">{statusLabels[status] ?? status}</span>
+          <span className="font-medium tabular-nums">{count}</span>
+          <span className="w-10 text-right text-xs text-muted-foreground">{Math.round(count / total * 100)} %</span>
+        </li>)}
+      </ul>
+    </>}
+  </CardContent></Card>
 }

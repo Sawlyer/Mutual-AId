@@ -4,7 +4,6 @@ import {
   Cable,
   Library,
   MessageSquareText,
-  MessagesSquare,
   type LucideIcon,
   Settings2,
   Workflow,
@@ -19,7 +18,6 @@ export interface NavigationItem {
 
 export const navigationItems: NavigationItem[] = [
   { to: '/', label: 'Chat', icon: MessageSquareText, end: true },
-  { to: '/conversations', label: 'Conversations', icon: MessagesSquare },
   { to: '/connectors', label: 'Connecteurs', icon: Cable, end: true },
   { to: '/connectors/mcp', label: 'Catalogue MCP', icon: Library },
   { to: '/agents', label: 'Agents', icon: Bot },
@@ -33,7 +31,6 @@ export const pageMeta: Record<string, { title: string; description: string }> = 
     title: 'Chat',
     description: 'Discutez avec Mutual-AId et orchestrez vos demandes.',
   },
-  '/conversations': { title: 'Conversations', description: 'Retrouvez vos échanges et orchestrations.' },
   '/connectors': { title: 'Connecteurs', description: 'Gérez les services externes disponibles.' },
   '/connectors/mcp': { title: 'Catalogue MCP', description: 'Recherchez et activez des serveurs MCP autorisés.' },
   '/executions': { title: 'Exécutions', description: 'Suivez les orchestrations démarrées depuis le chat.' },

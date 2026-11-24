@@ -12,7 +12,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, lazy: () => import('@/features/chat/chat-page').then((module) => ({ Component: module.ChatPage })) },
       { path: 'chat', lazy: () => import('@/features/chat/chat-page').then((module) => ({ Component: module.ChatPage })) },
-      { path: 'conversations', lazy: () => import('@/pages/conversations-page').then((module) => ({ Component: module.ConversationsPage })) },
+      { path: 'conversations', element: <Navigate to="/" replace /> },
       { path: 'conversations/:conversationId', lazy: () => import('@/features/chat/chat-page').then((module) => ({ Component: module.ChatPage })) },
       { path: 'executions/:executionId', lazy: () => import('@/pages/execution-page').then((module) => ({ Component: module.ExecutionPage })) },
       { path: 'executions', lazy: () => import('@/pages/executions-page').then((module) => ({ Component: module.ExecutionsPage })) },

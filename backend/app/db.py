@@ -1,7 +1,7 @@
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
@@ -996,6 +996,8 @@ class Database:
         return [_message_from_row(row) for row in rows]
 
     def get_user_analytics(self, user_id: str) -> dict[str, object]:
+        today = datetime.now(timezone.utc).date()
+        first_day = today - timedelta(days=13)
         with self.connection() as connection:
             conversations = connection.execute("SELECT COUNT(*) FROM conversations WHERE owner_id = ?", (user_id,)).fetchone()[0]
             execution_counts = connection.execute(
@@ -1005,10 +1007,25 @@ class Database:
                 "SELECT t.status, COUNT(*) AS count FROM execution_tasks t JOIN executions e ON e.id = t.execution_id WHERE t.user_id = ? AND e.user_id = ? GROUP BY t.status",
                 (user_id, user_id),
             ).fetchall()
+            daily_execution_counts = connection.execute(
+                """SELECT substr(created_at, 1, 10) AS date, COUNT(*) AS count
+                   FROM executions
+                   WHERE user_id = ? AND substr(created_at, 1, 10) BETWEEN ? AND ?
+                   GROUP BY substr(created_at, 1, 10)""",
+                (user_id, first_day.isoformat(), today.isoformat()),
+            ).fetchall()
         executions_by_status = {row["status"]: row["count"] for row in execution_counts}
         tasks_by_status = {row["status"]: row["count"] for row in task_counts}
         total_tasks = sum(tasks_by_status.values())
         completed_tasks = tasks_by_status.get("completed", 0)
+        execution_counts_by_day = {row["date"]: row["count"] for row in daily_execution_counts}
+        execution_activity = [
+            {
+                "date": (first_day + timedelta(days=offset)).isoformat(),
+                "count": execution_counts_by_day.get((first_day + timedelta(days=offset)).isoformat(), 0),
+            }
+            for offset in range(14)
+        ]
         return {
             "conversations": conversations,
             "executions": sum(executions_by_status.values()),
@@ -1018,6 +1035,7 @@ class Database:
             "task_completion_percent": round(completed_tasks * 100 / total_tasks) if total_tasks else 0,
             "execution_statuses": executions_by_status,
             "task_statuses": tasks_by_status,
+            "execution_activity": execution_activity,
         }
 
     def get_connector_connection(self, user_id: str, connector_id: str) -> dict[str, object] | None:

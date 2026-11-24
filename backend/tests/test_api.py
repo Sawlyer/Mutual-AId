@@ -390,3 +390,46 @@ def test_analytics_are_calculated_from_owner_scoped_records(tmp_path):
     with TestClient(main.create_app(Settings(database_path=database_path, openai_api_key="", openai_model=""))) as second:
         second.post("/api/auth/register", json={"name": "B", "email": "b@example.com", "password": "account b test password"})
         assert second.get("/api/analytics").json()["executions"] == 0
+
+
+def test_analytics_execution_activity_is_daily_bounded_and_owner_scoped(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from app.executions.repository import ExecutionRepository
+    from app.planning.schemas import ExecutionPlan, PlannedTask
+
+    database_path = tmp_path / "analytics-activity.sqlite3"
+    today = datetime.now(timezone.utc).date()
+    start_date = today - timedelta(days=13)
+
+    with TestClient(main.create_app(Settings(database_path=database_path, openai_api_key="", openai_model=""))) as first:
+        first.post("/api/auth/register", json={"name": "A", "email": "a@example.com", "password": "account a test password"})
+        owner_id = first.get("/api/auth/me").json()["id"]
+        database = first.app.state.database
+        repository = ExecutionRepository(database)
+        conversation = first.post("/api/conversations", json={}).json()
+        recent = repository.create(owner_id, conversation["id"], ExecutionPlan(summary="Recent", tasks=[PlannedTask(id="a", title="A")]))
+        old = repository.create(owner_id, conversation["id"], ExecutionPlan(summary="Old", tasks=[PlannedTask(id="b", title="B")]))
+        with database.connection() as connection:
+            connection.execute("UPDATE executions SET created_at = ? WHERE id = ?", ((today - timedelta(days=1)).isoformat() + "T12:00:00+00:00", recent.id))
+            connection.execute("UPDATE executions SET created_at = ? WHERE id = ?", ((today - timedelta(days=20)).isoformat() + "T12:00:00+00:00", old.id))
+
+        with TestClient(main.create_app(Settings(database_path=database_path, openai_api_key="", openai_model=""))) as second:
+            second.post("/api/auth/register", json={"name": "B", "email": "b@example.com", "password": "account b test password"})
+            other_id = second.get("/api/auth/me").json()["id"]
+            other_conversation = second.post("/api/conversations", json={}).json()
+            other_execution = ExecutionRepository(second.app.state.database).create(
+                other_id, other_conversation["id"], ExecutionPlan(summary="Other", tasks=[PlannedTask(id="c", title="C")]),
+            )
+            with second.app.state.database.connection() as connection:
+                connection.execute("UPDATE executions SET created_at = ? WHERE id = ?", ((today - timedelta(days=2)).isoformat() + "T12:00:00+00:00", other_execution.id))
+
+        metrics = first.get("/api/analytics").json()
+
+    activity = metrics["execution_activity"]
+    assert len(activity) == 14
+    assert activity[0]["date"] == start_date.isoformat()
+    assert activity[-1]["date"] == today.isoformat()
+    assert sum(point["count"] for point in activity) == 1
+    assert activity[-2]["count"] == 1
+    assert activity[-3]["count"] == 0

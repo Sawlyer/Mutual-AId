@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from 'react'
 import {
-  Background, BackgroundVariant, Controls, Handle, MiniMap, Position, ReactFlow,
+  Background, BackgroundVariant, Controls, Handle, Position, ReactFlow,
   type Edge, type Node, type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -78,7 +78,6 @@ export function WorkflowGraph({ execution }: { execution: Execution }) {
       <ReactFlow<TaskNodeType, Edge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.2 }} minZoom={0.2} maxZoom={1.5} nodesConnectable={false} nodesDraggable={false} onNodeClick={(_, node) => setSelectedId(node.id)}>
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--color-border)" />
         <Controls position="bottom-left" />
-        <MiniMap position="bottom-right" pannable zoomable nodeColor={(node) => statusStyles[(node.data as TaskNodeData).task.status]?.includes('emerald') ? '#10b981' : '#818cf8'} />
       </ReactFlow>
     </div>
     <aside aria-label="Détails de la tâche" className="rounded-xl border bg-card p-4">

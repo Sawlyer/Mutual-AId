@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -23,6 +23,12 @@ class AnalyticsRead(BaseModel):
     task_completion_percent: int
     execution_statuses: dict[str, int]
     task_statuses: dict[str, int]
+    execution_activity: list["AnalyticsExecutionActivityRead"]
+
+
+class AnalyticsExecutionActivityRead(BaseModel):
+    date: date
+    count: int = Field(ge=0)
 
 
 class AuthRegister(BaseModel):

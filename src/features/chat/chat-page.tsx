@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { ConnectorSelector } from '@/features/chat/connector-selector'
 import { McpActivityList } from '@/features/chat/mcp-activity'
+import { connectedConnectorIds } from '@/features/chat/conversation-connectors'
 import { useConversationsStore } from '@/stores/use-conversations-store'
 import { useOpenAIChatStore } from '@/stores/use-openai-chat-store'
 import { useAuthStore } from '@/stores/use-auth-store'
@@ -251,16 +252,26 @@ export function ChatPage() {
     activeRequest.current = controller
     setRequestPending(true)
     try {
-      if (!id || !conversations.some((item) => item.id === id)) {
+      const isNewConversation = !id || !conversations.some((item) => item.id === id)
+      if (isNewConversation) {
+        let initialConnectorIds: string[] = []
+        if (chatAdapter.mode === 'openai') {
+          const catalog = await chatAdapter.listConnectors().catch(() => connectorCatalog)
+          setConnectorCatalog(catalog)
+          initialConnectorIds = connectedConnectorIds(catalog)
+        }
         const created = await chatAdapter.createConversation()
         id = created.id
         if (chatAdapter.mode === 'openai') {
           upsertRemoteConversation(created)
           useOpenAIChatStore.getState().setMessages(created.id, [])
+          const preferences = await chatAdapter.setConversationConnectors(created.id, initialConnectorIds)
+          setRemoteConnectorIds(created.id, preferences.connector_ids)
         }
         setPendingConversationId(id)
         navigateAfterResponse = true
       }
+      if (!id) throw new Error('La conversation n’a pas pu être créée.')
       pendingMcpSuggestions.delete(id)
       setMcpSuggestionState({ conversationId: id, suggestions: [] })
       if (chatAdapter.mode === 'demo') {
@@ -437,24 +448,28 @@ export function ChatPage() {
   async function handleConnectorIdsChange(connectorIds: string[]) {
     setChatError(null)
     let id = routeConversationId
+    let createdNewConversation = false
     try {
       if (!id || !conversations.some((item) => item.id === id)) {
         const created = await chatAdapter.createConversation()
         id = created.id
+        createdNewConversation = true
         if (chatAdapter.mode === 'openai') {
           upsertRemoteConversation(created)
           useOpenAIChatStore.getState().setMessages(created.id, [])
         }
-        navigate(`/conversations/${id}`)
       }
       const preferences = await chatAdapter.setConversationConnectors(id, connectorIds)
       if (chatAdapter.mode === 'openai') setRemoteConnectorIds(id, preferences.connector_ids)
+      if (createdNewConversation) navigate(`/conversations/${id}`)
     } catch (error) {
       setChatError(error instanceof Error ? error.message : 'Les connecteurs n’ont pas pu être enregistrés.')
     }
   }
 
-  const selectedConnectorIds = chatAdapter.mode === 'demo' ? conversation?.connectorIds ?? [] : remoteConnectorIds
+  const selectedConnectorIds = chatAdapter.mode === 'demo'
+    ? conversation?.connectorIds ?? []
+    : activeConversationId ? remoteConnectorIds : connectedConnectorIds(connectorCatalog)
   const isWelcome = !activeConversationId || (chatAdapter.mode === 'demo' && !conversation)
   const conversationLoading = Boolean(activeConversationId && remoteLoadingMessageIds.includes(activeConversationId))
   const cancelResponse = () => activeRequest.current?.abort()
