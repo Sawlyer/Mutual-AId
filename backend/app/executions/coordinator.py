@@ -16,6 +16,7 @@ from app.db import Database
 from app.executions.models import ExecutionRead, TaskRead
 from app.executions.repository import ExecutionRepository
 from app.executions.reviewer import ExecutionResultReview, ExecutionResultReviewer
+from app.model_settings import model_settings_for
 from app.planning.schemas import ExecutionPlan
 
 logger = logging.getLogger(__name__)
@@ -91,14 +92,16 @@ class AgentTaskExecutor:
             ) as mcp_servers:
                 agent = Agent(
                     name=str(snapshot.get("name") or "Assistant"), instructions=instructions,
-                    model=self.settings.openai_model.strip(), tools=tools, mcp_servers=mcp_servers,
+                    model=self.settings.openai_model.strip(), model_settings=model_settings_for(self.settings),
+                    tools=tools, mcp_servers=mcp_servers,
                     mcp_config={"include_server_in_tool_names": True, "failure_error_function": None} if mcp_servers else None,
                 )
                 result = await Runner.run(agent, prompt, context=context, max_turns=self.settings.max_agent_turns,
                                           run_config=RunConfig(tracing_disabled=True))
         else:
             agent = Agent(name=str(snapshot.get("name") or "Assistant"), instructions=instructions,
-                          model=self.settings.openai_model.strip(), tools=tools)
+                          model=self.settings.openai_model.strip(), model_settings=model_settings_for(self.settings),
+                          tools=tools)
             result = await Runner.run(agent, prompt, context=context, max_turns=self.settings.max_agent_turns,
                                       run_config=RunConfig(tracing_disabled=True))
         output = result.final_output
@@ -120,6 +123,7 @@ class AgentTaskExecutor:
                 "Do not include private reasoning, request tools, invent evidence, or change task dependencies."
             ),
             model=self.settings.openai_model.strip(),
+            model_settings=model_settings_for(self.settings),
             output_type=TaskRevision,
         )
         prompt = (

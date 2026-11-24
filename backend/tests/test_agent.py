@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+from pydantic import ValidationError
 from agents import Agent
 from agents.extensions.memory import AsyncSQLiteSession
 from agents.testing import ScriptedModel, assistant_message
@@ -15,6 +17,32 @@ def test_build_assistant_without_mcp_servers_uses_empty_mcp_config():
     assistant = agent_module.build_assistant(settings)
 
     assert assistant.mcp_config == {}
+
+
+def test_build_assistant_uses_configured_reasoning_effort():
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="test-key",
+        openai_model="test-model",
+        openai_reasoning_effort="high",
+    )
+
+    assistant = agent_module.build_assistant(settings)
+
+    assert assistant.model_settings.reasoning.effort == "high"
+
+
+def test_settings_rejects_unsupported_reasoning_effort():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, openai_reasoning_effort="turbo")
+
+
+def test_settings_reads_reasoning_effort_from_environment(monkeypatch):
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "xhigh")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.openai_reasoning_effort == "xhigh"
 
 
 def test_assistant_stream_uses_runner_and_persists_sdk_session(tmp_path, monkeypatch):

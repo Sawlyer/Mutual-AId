@@ -107,18 +107,23 @@ def test_planner_receives_enabled_agent_skill_summaries(tmp_path, monkeypatch):
     disabled = agents.create_skill("user", AgentSkillCreate(name="Disabled skill", instructions="Do not show." , enabled=False))
     agents.update_profile("user", profile.id, AgentProfileUpdate(skill_ids=[enabled.id, disabled.id]))
     captured = []
+    captured_reasoning_efforts = []
 
-    async def fake_run(_agent, user_input, **_kwargs):
+    async def fake_run(agent, user_input, **_kwargs):
         captured.append(user_input)
+        captured_reasoning_efforts.append(agent.model_settings.reasoning.effort)
         return SimpleNamespace(final_output=PlanningDecision(summary="Simple", tasks=[], requires_orchestration=False))
 
     monkeypatch.setattr(planning_service.Runner, "run", fake_run)
-    planner = planning_service.Planner(Settings(openai_api_key="key", openai_model="test-model"))
+    planner = planning_service.Planner(Settings(
+        openai_api_key="key", openai_model="test-model", openai_reasoning_effort="high",
+    ))
     asyncio.run(planner.plan(PlanningRequest(user_id="user", conversation_id="c", message="Hello"), agents.list_profiles("user"), []))
 
     assert "Source checks" in captured[0]
     assert "Verifies references." in captured[0]
     assert "Disabled skill" not in captured[0]
+    assert captured_reasoning_efforts == ["high"]
 
 
 def test_an_unusable_plan_becomes_a_direct_answer(tmp_path, monkeypatch):

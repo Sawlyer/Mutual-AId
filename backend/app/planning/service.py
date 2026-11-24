@@ -7,6 +7,7 @@ from openai import AuthenticationError
 from app.agents.models import AgentProfileRead
 from app.config import Settings
 from app.connectors.registry import Connector
+from app.model_settings import model_settings_for
 from app.planning.schemas import ExecutionPlan, PlanningDecision, PlanningRequest, PlanValidationError, PlannedTask, validate_dag
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,8 @@ class Planner:
         try:
             agent = Agent(
                 name="Mutual-AId Planner", instructions=PLANNER_INSTRUCTIONS,
-                model=self.settings.openai_model.strip(), output_type=PlanningDecision, tools=[],
+                model=self.settings.openai_model.strip(), model_settings=model_settings_for(self.settings),
+                output_type=PlanningDecision, tools=[],
             )
             result = await Runner.run(
                 agent, input_text, max_turns=1,

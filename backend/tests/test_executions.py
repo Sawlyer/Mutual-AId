@@ -665,11 +665,16 @@ def test_agent_task_executor_resolves_current_enabled_profile_skills(tmp_path, m
     skill = service.create_skill("owner", AgentSkillCreate(name="Citations", instructions="Cite every source."))
     service.update_profile("owner", profile.id, AgentProfileUpdate(skill_ids=[skill.id]))
     repo = ExecutionRepository(database)
-    settings = Settings(database_path=database.path, openai_api_key="test-key", openai_model="test-model")
+    settings = Settings(
+        database_path=database.path, openai_api_key="test-key", openai_model="test-model",
+        openai_reasoning_effort="low",
+    )
     captured_instructions = []
+    captured_reasoning_efforts = []
 
     async def fake_run(agent, *_args, **_kwargs):
         captured_instructions.append(agent.instructions)
+        captured_reasoning_efforts.append(agent.model_settings.reasoning.effort)
         return SimpleNamespace(final_output="done")
 
     monkeypatch.setattr(coordinator.Runner, "run", fake_run)
@@ -689,3 +694,4 @@ def test_agent_task_executor_resolves_current_enabled_profile_skills(tmp_path, m
 
     assert "Cite every source." in captured_instructions[0]
     assert "Cite every source." not in captured_instructions[1]
+    assert captured_reasoning_efforts == ["low", "low"]
