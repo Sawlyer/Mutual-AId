@@ -7,6 +7,7 @@ export interface AnalyticsSummary {
   task_completion_percent: number
   execution_statuses: Record<string, number>
   task_statuses: Record<string, number>
+  execution_activity: { date: string; count: number }[]
 }
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')

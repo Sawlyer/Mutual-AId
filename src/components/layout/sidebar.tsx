@@ -9,6 +9,7 @@ import { chatAdapter } from '@/services/chat-adapters'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useAuthStore } from '@/stores/use-auth-store'
+import { sortConversationsByRecent } from '@/features/chat/conversation-list'
 
 interface SidebarProps {
   onNavigate?: () => void
@@ -96,7 +97,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           </Button>
         </div>
         <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto">
-          {conversations.slice(0, 8).map((conversation) => (
+          {sortConversationsByRecent(conversations).map((conversation) => (
             <li key={conversation.id} className="group relative flex items-center gap-1 rounded-lg pr-1 hover:bg-muted/70">
               {editingId === conversation.id ? (
                 <form className="flex min-w-0 flex-1 gap-1 p-1" onSubmit={(event) => { event.preventDefault(); void saveRename(conversation.id) }}>
