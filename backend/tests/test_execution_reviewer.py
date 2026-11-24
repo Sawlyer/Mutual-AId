@@ -23,6 +23,7 @@ def _execution():
 
 
 def test_reviewer_uses_structured_output_without_tools_and_returns_only_verdict(monkeypatch):
+    from app.config import Settings
     from app.executions import reviewer as reviewer_module
 
     calls = {}
@@ -42,7 +43,9 @@ def test_reviewer_uses_structured_output_without_tools_and_returns_only_verdict(
 
     monkeypatch.setattr(reviewer_module, "Agent", FakeAgent)
     monkeypatch.setattr(reviewer_module, "Runner", FakeRunner)
-    settings = SimpleNamespace(openai_configured=True, openai_model="gpt-test")
+    settings = Settings(
+        _env_file=None, openai_api_key="key", openai_model="gpt-test", openai_reasoning_effort="xhigh",
+    )
 
     review = asyncio.run(ExecutionResultReviewer(settings).review(_execution()))
 
@@ -50,11 +53,13 @@ def test_reviewer_uses_structured_output_without_tools_and_returns_only_verdict(
     assert calls["agent"]["output_type"] is ExecutionResultReview
     assert calls["agent"]["tools"] == []
     assert calls["agent"]["model"] == "gpt-test"
+    assert calls["agent"]["model_settings"].reasoning.effort == "xhigh"
     assert calls["max_turns"] == 1
     assert "step-by-step reasoning" in calls["agent"]["instructions"]
 
 
 def test_reviewer_marks_truncated_result_inputs_for_review(monkeypatch):
+    from app.config import Settings
     from app.executions import reviewer as reviewer_module
 
     calls = {}
@@ -84,7 +89,7 @@ def test_reviewer_marks_truncated_result_inputs_for_review(monkeypatch):
     })
 
     review = asyncio.run(ExecutionResultReviewer(
-        SimpleNamespace(openai_configured=True, openai_model="gpt-test"),
+        Settings(_env_file=None, openai_api_key="key", openai_model="gpt-test"),
     ).review(execution))
 
     assert calls["payload"]["input_truncated"] is True

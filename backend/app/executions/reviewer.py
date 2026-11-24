@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import Settings
 from app.executions.models import ExecutionRead
+from app.model_settings import model_settings_for
 
 MAX_REVIEW_TASKS = 10
 MAX_REVIEW_RESULT_CHARS = 1_200
@@ -64,6 +65,7 @@ class ExecutionResultReviewer:
                 "of sensitive result contents."
             ),
             model=self.settings.openai_model.strip(),
+            model_settings=model_settings_for(self.settings),
             tools=[],
             output_type=ExecutionResultReview,
         )

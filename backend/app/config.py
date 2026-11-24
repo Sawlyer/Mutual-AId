@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +17,9 @@ class Settings(BaseSettings):
 
     openai_api_key: SecretStr | None = None
     openai_model: str | None = None
+    openai_reasoning_effort: Literal[
+        "none", "minimal", "low", "medium", "high", "xhigh", "max",
+    ] = "medium"
     database_path: Path = BACKEND_DIR / "data" / "mutual_aid.sqlite3"
     allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"])
     max_agent_turns: int = Field(default=5, ge=1, le=20)

@@ -8,6 +8,7 @@ from agents import Agent, RunConfig, Runner, set_default_openai_key
 from agents.extensions.memory import AsyncSQLiteSession
 
 from app.config import Settings
+from app.model_settings import model_settings_for
 
 logger = logging.getLogger(__name__)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
@@ -154,6 +155,7 @@ def build_assistant(settings: Settings, tools: Sequence[object] = (), mcp_server
         raise RuntimeError("OpenAI is not configured")
     return Agent(
         name="Assistant", instructions=ASSISTANT_INSTRUCTIONS, model=settings.openai_model.strip(),
+        model_settings=model_settings_for(settings),
         tools=list(tools), mcp_servers=list(mcp_servers),
         mcp_config={"include_server_in_tool_names": True, "failure_error_function": None} if mcp_servers else {},
     )
