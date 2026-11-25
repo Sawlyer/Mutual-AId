@@ -138,19 +138,19 @@ def test_auto_create_is_idempotent_under_concurrent_requests(tmp_path):
     assert len(database.list_agent_profiles("user-a")) == 1
 
 
-def test_agent_api_crud_requires_owner_and_hides_foreign_profiles(tmp_path):
+def test_agent_api_crud_uses_the_local_workspace(tmp_path):
     from app.config import Settings
     from app.main import create_app
     from fastapi.testclient import TestClient
 
     with TestClient(create_app(Settings(database_path=tmp_path / "api.sqlite3", openai_api_key="", openai_model=""))) as client:
-        assert client.get("/api/agents").status_code == 401
+        assert client.get("/api/agents").status_code == 200
         first = client.post("/api/auth/register", json={"name": "A", "email": "a@example.com", "password": "account a test password"})
         created = client.post("/api/agents", json={
             "name": "Coach", "domain": "wellness", "description": "Habitudes", "instructions": "Planifie avec prudence.",
             "capability_ids": ["wellness_planning"],
         })
-        assert first.status_code == 201
+        assert first.status_code == 404
         assert created.status_code == 201
         profile_id = created.json()["id"]
         assert client.get("/api/agents").json()["profiles"][0]["id"] == profile_id
@@ -161,13 +161,12 @@ def test_agent_api_crud_requires_owner_and_hides_foreign_profiles(tmp_path):
         }).status_code == 422
 
     with TestClient(create_app(Settings(database_path=tmp_path / "api.sqlite3", openai_api_key="", openai_model=""))) as client:
-        client.post("/api/auth/register", json={"name": "B", "email": "b@example.com", "password": "account b test password"})
-        assert client.get(f"/api/agents/{profile_id}").status_code == 404
-        assert client.patch(f"/api/agents/{profile_id}", json={"name": "Stolen"}).status_code == 404
-        assert client.delete(f"/api/agents/{profile_id}").status_code == 404
+        assert client.get(f"/api/agents/{profile_id}").status_code == 200
+        assert client.patch(f"/api/agents/{profile_id}", json={"name": "Updated"}).status_code == 200
+        assert client.delete(f"/api/agents/{profile_id}").status_code == 204
 
 
-def test_agent_skills_crud_assignment_limits_and_user_isolation(tmp_path):
+def test_agent_skills_crud_assignment_limits_in_the_local_workspace(tmp_path):
     from app.config import Settings
     from app.main import create_app
     from fastapi.testclient import TestClient
@@ -341,7 +340,7 @@ def test_marketplace_skill_can_be_rolled_back_to_a_previous_catalog_version(tmp_
     assert restored.skill.catalog_version == 2
 
 
-def test_marketplace_and_generated_skill_review_api_is_authenticated_and_user_scoped(tmp_path):
+def test_marketplace_and_generated_skill_review_api_uses_the_local_workspace(tmp_path):
     from app.config import Settings
     from app.main import create_app
     from fastapi.testclient import TestClient
@@ -371,8 +370,8 @@ def test_marketplace_and_generated_skill_review_api_is_authenticated_and_user_sc
 
     with TestClient(create_app(settings)) as other:
         other.post("/api/auth/register", json={"name": "Other", "email": "market-other@example.com", "password": "other marketplace password"})
-        assert other.get(f"/api/agent-skills/{skill['id']}/comparison").status_code == 404
-        assert other.post(f"/api/agent-skills/{generated_id}/review", json={"decision": "approved"}).status_code == 404
+        assert other.get(f"/api/agent-skills/{skill['id']}/comparison").status_code == 200
+        assert other.post(f"/api/agent-skills/{generated_id}/review", json={"decision": "approved"}).status_code == 200
 
 
 def test_legacy_marketplace_copy_is_migrated_without_losing_its_customization(tmp_path):

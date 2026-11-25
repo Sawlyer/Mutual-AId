@@ -15,15 +15,15 @@ def sample_plan():
 def test_execution_and_tasks_persist_and_are_owner_scoped(tmp_path):
     db = Database(tmp_path / "execution.sqlite3")
     db.initialize()
-    db.create_user("owner@example.com", "Owner", "hash")
-    conversation = db.create_conversation("Test", "owner-id")
+    owner_id = db.get_local_workspace_user().id
+    conversation = db.create_conversation("Test", owner_id)
     repo = ExecutionRepository(db)
-    created = repo.create("owner-id", conversation.id, sample_plan())
+    created = repo.create(owner_id, conversation.id, sample_plan())
 
     assert created.status == "running"
     assert [task.status for task in created.tasks] == ["ready", "pending"]
     assert created.tasks[1].dependencies == ["collect"]
-    assert repo.get("foreign", created.id) is None
+    assert repo.get("another-user", created.id) is None
 
 
 def test_resume_requeues_safe_work_without_replaying_completed_or_external_tasks(tmp_path):

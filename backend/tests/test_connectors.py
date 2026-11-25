@@ -30,10 +30,6 @@ def make_client(tmp_path):
     app = create_app(Settings(database_path=tmp_path / "connectors.sqlite3", openai_api_key="", openai_model=""))
     client = TestClient(app)
     app.state.database.initialize()
-    response = client.post("/api/auth/register", json={
-        "name": "Test user", "email": "test@example.com", "password": "a sufficiently long test password",
-    })
-    assert response.status_code == 201
     return client
 
 
@@ -60,7 +56,7 @@ def test_mcp_server_create_rejects_credential_embedded_urls():
         McpServerCreate(name="Secret URL", url="https://user:pass@example.org/mcp")
 
 
-def test_mcp_servers_are_user_scoped_and_credentials_are_encrypted(tmp_path):
+def test_mcp_servers_share_the_local_workspace_and_encrypt_credentials(tmp_path):
     db_path = tmp_path / "mcp.sqlite3"
     key = Fernet.generate_key().decode()
     settings = Settings(database_path=db_path, openai_api_key="", openai_model="", connector_token_encryption_key=key)
@@ -70,7 +66,7 @@ def test_mcp_servers_are_user_scoped_and_credentials_are_encrypted(tmp_path):
             "name": "Research MCP", "url": "https://example.com/mcp", "auth_token": "sensitive-token-value",
         })
         server = created.json()
-        rows = owner.app.state.database.list_mcp_servers(owner.app.state.database.get_user_by_email("owner@example.com")["id"])
+        rows = owner.app.state.database.list_mcp_servers(owner.app.state.database.get_local_workspace_user().id)
         listing = owner.get("/api/connectors/mcp").json()
 
     assert created.status_code == 201
@@ -81,9 +77,8 @@ def test_mcp_servers_are_user_scoped_and_credentials_are_encrypted(tmp_path):
     assert "sensitive-token-value" not in created.text
 
     with TestClient(create_app(settings)) as other:
-        other.post("/api/auth/register", json={"name": "Other", "email": "other@example.com", "password": "other test password long"})
-        assert other.get("/api/connectors/mcp").json() == []
-        assert other.delete(f"/api/connectors/mcp/{server['id']}").status_code == 404
+        assert other.get("/api/connectors/mcp").json()[0]["id"] == server["id"]
+        assert other.delete(f"/api/connectors/mcp/{server['id']}").status_code == 204
 
 
 def test_mcp_tool_approval_only_accepts_discovered_tools(tmp_path):
@@ -92,7 +87,7 @@ def test_mcp_tool_approval_only_accepts_discovered_tools(tmp_path):
     with TestClient(create_app(settings)) as client:
         client.post("/api/auth/register", json={"name": "Tools", "email": "tools@example.com", "password": "tools test password long"})
         server = client.post("/api/connectors/mcp", json={"name": "Docs", "url": "https://example.com/mcp"}).json()
-        user_id = client.app.state.database.get_user_by_email("tools@example.com")["id"]
+        user_id = client.app.state.database.get_local_workspace_user().id
         client.app.state.database.update_mcp_server_tools(user_id, server["id"], [{"name": "search_docs", "description": "Search documentation", "access": "read"}])
         selected = client.put(f"/api/connectors/mcp/{server['id']}/tools", json={"tool_names": ["search_docs"]})
         rejected = client.put(f"/api/connectors/mcp/{server['id']}/tools", json={"tool_names": ["delete_all"]})
@@ -108,7 +103,7 @@ def test_mcp_connectors_are_user_scoped_in_catalog_and_conversation_preferences(
     with TestClient(create_app(settings)) as owner:
         owner.post("/api/auth/register", json={"name": "Owner", "email": "mcp-owner@example.com", "password": "owner password long enough"})
         created = owner.post("/api/connectors/mcp", json={"name": "Docs MCP", "url": "https://8.8.8.8/mcp"}).json()
-        user_id = owner.app.state.database.get_user_by_email("mcp-owner@example.com")["id"]
+        user_id = owner.app.state.database.get_local_workspace_user().id
         owner.app.state.database.update_mcp_server_tools(user_id, created["id"], [
             {"name": "search_docs", "description": "Search docs", "access": "read"},
         ])
@@ -329,7 +324,7 @@ def test_failed_server_disappears_when_its_fiche_is_removed(tmp_path):
         created = client.post("/api/connectors/mcp", json={
             "name": "Docs", "url": "https://1.1.1.1/mcp", "catalog_id": "docs-search",
         })
-        user_id = client.app.state.database.get_user_by_email("removed@example.com")["id"]
+        user_id = client.app.state.database.get_local_workspace_user().id
         client.app.state.database.update_mcp_server_tools(
             user_id, created.json()["id"], [], status="error",
             error="Impossible de joindre ou d’inspecter ce serveur MCP.",
@@ -388,7 +383,7 @@ def test_catalog_refresh_route_reports_a_directory_refusal(tmp_path, monkeypatch
         anonymous = client.post("/api/connectors/mcp/catalog/refresh")
         client.post("/api/auth/register", json={"name": "Refresh", "email": "refresh@example.com", "password": "refresh test password long"})
         response = client.post("/api/connectors/mcp/catalog/refresh")
-    assert anonymous.status_code == 401
+    assert anonymous.status_code == 200
     assert response.status_code == 200
     assert response.json()["directory_available"] is False
     assert response.json()["added"] == 0
@@ -435,7 +430,7 @@ def test_catalog_activation_requires_a_token_only_when_the_fiche_says_so(tmp_pat
         with_token = client.post("/api/connectors/mcp", json={
             "name": "Paid", "url": "https://9.9.9.9/mcp", "catalog_id": "paid-api", "auth_token": "sensitive-token-value",
         })
-        owner_id = client.app.state.database.get_user_by_email("token@example.com")["id"]
+        owner_id = client.app.state.database.get_local_workspace_user().id
         stored_token = client.app.state.database.get_mcp_server(owner_id, with_token.json()["id"])
     assert missing_token.status_code == 422
     assert with_token.status_code == 201
@@ -538,10 +533,10 @@ def test_catalog_search_suggestions_and_activation_stay_local(tmp_path):
         created = client.post("/api/connectors/mcp", json={
             "name": "Ignored", "url": "https://8.8.8.8/mcp", "catalog_id": "docs-search", "auth_token": "sensitive-token-value",
         })
-        owner_id = client.app.state.database.get_user_by_email("catalog@example.com")["id"]
+        owner_id = client.app.state.database.get_local_workspace_user().id
         ignored_token = client.app.state.database.get_mcp_server(owner_id, created.json()["id"])
         too_early = client.patch(f"/api/connectors/mcp/{created.json()['id']}", json={"enabled": True})
-        user_id = client.app.state.database.get_user_by_email("catalog@example.com")["id"]
+        user_id = client.app.state.database.get_local_workspace_user().id
         client.app.state.database.update_mcp_server_tools(user_id, created.json()["id"], [
             {"name": "search_docs", "description": "Search", "access": "read"},
             {"name": "delete_docs", "description": "Delete", "access": "write"},
@@ -621,13 +616,13 @@ def test_tool_registry_refuses_disconnected_and_unselected_connectors(tmp_path):
         database = client.app.state.database
         database.initialize()
         try:
-            tools.tools_for_user(client.app.state.database.get_user_by_email("test@example.com")["id"], ("gmail",), database)
+            tools.tools_for_user(client.app.state.database.get_local_workspace_user().id, ("gmail",), database)
         except ConnectorAuthorizationError:
             pass
         else:
             raise AssertionError("Disconnected connector must not provide an agent tool")
 
-        assert tools.tools_for_user(client.app.state.database.get_user_by_email("test@example.com")["id"], (), database) == []
+        assert tools.tools_for_user(client.app.state.database.get_local_workspace_user().id, (), database) == []
 
 
 def test_connector_selections_are_checked_again_when_streaming(tmp_path):
@@ -664,7 +659,7 @@ def test_registered_tools_require_connection_scopes_and_human_approval(tmp_path)
         raise AssertionError("Credentials must be isolated between users")
 
 
-def test_conversation_access_is_scoped_to_backend_principal(tmp_path):
+def test_conversations_are_shared_within_the_local_workspace(tmp_path):
     database_path = tmp_path / "shared.sqlite3"
     with TestClient(create_app(Settings(database_path=database_path, openai_api_key="", openai_model=""))) as account_a:
         account_a.post("/api/auth/register", json={"name":"A", "email":"a@example.com", "password":"account a test password"})
@@ -674,8 +669,8 @@ def test_conversation_access_is_scoped_to_backend_principal(tmp_path):
         response = account_b.get(f"/api/conversations/{conversation['id']}")
         conversations = account_b.get("/api/conversations").json()
 
-    assert response.status_code == 404
-    assert conversations == []
+    assert response.status_code == 200
+    assert len(conversations) == 1
 import sqlite3
 
 
@@ -983,7 +978,7 @@ def test_github_app_oauth_uses_one_time_state_and_stores_token_encrypted(tmp_pat
     assert database.get_connector_connection("user-a", "github")["granted_scopes"] == list(GITHUB_READ_PERMISSIONS)
 
 
-def test_github_connect_endpoint_requires_session_and_returns_authorization_url(tmp_path):
+def test_github_connect_endpoint_returns_authorization_url_for_the_local_workspace(tmp_path):
     from cryptography.fernet import Fernet
     settings = Settings(
         database_path=tmp_path / "github-connect.sqlite3", openai_api_key="", openai_model="",
@@ -992,10 +987,6 @@ def test_github_connect_endpoint_requires_session_and_returns_authorization_url(
         connector_token_encryption_key=Fernet.generate_key().decode(),
     )
     with TestClient(create_app(settings)) as client:
-        assert client.post("/api/connectors/github/connect").status_code == 401
-        client.post("/api/auth/register", json={
-            "name": "GitHub user", "email": "github@example.com", "password": "github integration test password",
-        })
         connectors = {item["id"]: item for item in client.get("/api/connectors").json()}
         response = client.post("/api/connectors/github/connect")
     assert response.status_code == 200
@@ -1183,10 +1174,6 @@ def test_calendar_oauth_is_exposed_only_when_server_configuration_is_complete(tm
     )
     app = create_app(settings)
     with TestClient(app) as client:
-        response = client.post("/api/auth/register", json={
-            "name": "Calendar user", "email": "calendar@example.com", "password": "calendar test password long",
-        })
-        assert response.status_code == 201
         connectors = {item["id"]: item for item in client.get("/api/connectors").json()}
         result = client.post("/api/connectors/google_calendar/connect")
         gmail_result = client.post("/api/connectors/gmail/connect")
@@ -1211,11 +1198,11 @@ def test_registry_marks_calendar_setup_required_until_oauth_is_configured():
     assert registry.get("custom_mcp") is None
 
 
-def test_calendar_oauth_connect_and_disconnect_require_a_session(tmp_path):
+def test_calendar_oauth_connect_and_disconnect_use_the_local_workspace(tmp_path):
     settings = Settings(database_path=tmp_path / "calendar-auth.sqlite3", openai_api_key="", openai_model="")
     with TestClient(create_app(settings)) as client:
-        assert client.post("/api/connectors/google_calendar/connect").status_code == 401
-        assert client.post("/api/connectors/google_calendar/disconnect").status_code == 401
+        assert client.post("/api/connectors/google_calendar/connect").status_code == 503
+        assert client.post("/api/connectors/google_calendar/disconnect").status_code == 503
 
 
 def test_activation_refusal_returns_a_connection_link_or_a_token_request(tmp_path, monkeypatch):
@@ -1252,7 +1239,7 @@ def test_activation_refusal_returns_a_connection_link_or_a_token_request(tmp_pat
             f"/api/conversations/{conversation['id']}/mcp",
             json={"catalog_id": "docs-search", "auth_token": "user-secret"},
         )
-        owner_id = client.app.state.database.get_user_by_email("access@example.com")["id"]
+        owner_id = client.app.state.database.get_local_workspace_user().id
         row = client.app.state.database.list_mcp_servers(owner_id)[-1]
         created = client.post("/api/connectors/mcp", json={"name": "Open", "url": "https://9.9.9.9/mcp"})
         replaced = client.put(
