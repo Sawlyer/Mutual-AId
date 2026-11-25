@@ -1,10 +1,13 @@
 import { memo, useMemo, useState } from 'react'
+import { motion, useReducedMotion } from 'motion/react'
+import { Check, X } from 'lucide-react'
 import {
   Background, BackgroundVariant, Controls, Handle, Position, ReactFlow,
   type Edge, type Node, type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import type { Execution, ExecutionTask } from '@/types/execution'
 
 type TaskNodeData = { task: ExecutionTask }
@@ -55,8 +58,15 @@ function positionTasks(tasks: ExecutionTask[]): TaskNodeType[] {
   })
 }
 
-export function WorkflowGraph({ execution }: { execution: Execution }) {
+interface WorkflowGraphProps {
+  execution: Execution
+  busy?: boolean
+  onDecide?: (approvalId: string, decision: 'approve' | 'reject') => void
+}
+
+export function WorkflowGraph({ execution, busy = false, onDecide }: WorkflowGraphProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const reduceMotion = useReducedMotion()
   const nodes = useMemo(() => positionTasks(execution.tasks), [execution.tasks])
   const edges: Edge[] = useMemo(() => {
     const validIds = new Set(execution.tasks.map((task) => task.id))
@@ -67,26 +77,39 @@ export function WorkflowGraph({ execution }: { execution: Execution }) {
   const selected = execution.tasks.find((task) => task.id === selectedId) ?? null
   if (execution.tasks.length === 0) return <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">Cette exécution ne contient aucune tâche.</div>
 
-  return <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
+  return <div className={`grid gap-4 ${selected ? 'xl:grid-cols-[minmax(0,1fr)_300px]' : 'grid-cols-1'}`}>
     <section className="space-y-2 sm:hidden" aria-label="Liste du workflow">
-      {execution.tasks.map((task, index) => <button type="button" key={task.id} onClick={() => setSelectedId(task.id)} aria-pressed={selectedId === task.id} className="w-full rounded-xl border bg-card p-4 text-left shadow-sm aria-pressed:border-primary/50 aria-pressed:ring-2 aria-pressed:ring-primary/10">
+      {execution.tasks.map((task, index) => <button type="button" key={task.id} onClick={() => setSelectedId((current) => current === task.id ? null : task.id)} aria-pressed={selectedId === task.id} className="w-full rounded-xl border bg-card p-4 text-left shadow-sm transition-colors aria-pressed:border-primary/50 aria-pressed:ring-2 aria-pressed:ring-primary/10">
         <span className="flex items-start justify-between gap-3"><span className="flex items-start gap-3"><span className="grid size-6 shrink-0 place-items-center rounded-md bg-muted text-xs">{index + 1}</span><span className="font-medium">{task.title}</span></span><Badge variant="outline" className="shrink-0 capitalize">{task.status.replaceAll('_', ' ')}</Badge></span>
         {task.dependencies.length > 0 && <span className="mt-2 block pl-9 text-xs text-muted-foreground">Dépend de : {task.dependencies.join(', ')}</span>}
       </button>)}
     </section>
     <div className="hidden h-[540px] overflow-hidden rounded-xl border bg-muted/15 sm:block xl:h-[620px]" aria-label="Graphe des dépendances">
-      <ReactFlow<TaskNodeType, Edge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.2 }} minZoom={0.2} maxZoom={1.5} nodesConnectable={false} nodesDraggable={false} onNodeClick={(_, node) => setSelectedId(node.id)}>
+      <ReactFlow<TaskNodeType, Edge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.2 }} minZoom={0.2} maxZoom={1.5} nodesConnectable={false} nodesDraggable={false} onNodeClick={(_, node) => setSelectedId((current) => current === node.id ? null : node.id)}>
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--color-border)" />
         <Controls position="bottom-left" />
       </ReactFlow>
     </div>
-    <aside aria-label="Détails de la tâche" className="rounded-xl border bg-card p-4">
-      {selected ? <TaskDetails task={selected} /> : <div className="flex min-h-24 items-center justify-center text-center text-sm text-muted-foreground">Sélectionnez une tâche pour voir ses détails.</div>}
-    </aside>
+    {selected && <motion.aside
+      key={selected.id}
+      aria-label={`Détails de la tâche : ${selected.title}`}
+      initial={reduceMotion ? false : { opacity: 0, x: 12, scale: 0.98 }}
+      animate={{ opacity: 1, x: 0, scale: 1 }}
+      exit={{ opacity: 0, x: 8 }}
+      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+      className="rounded-xl border bg-card p-4"
+    >
+      <div className="mb-4 flex justify-end">
+        <Button type="button" variant="ghost" size="icon" aria-label="Fermer les détails de la tâche" onClick={() => setSelectedId(null)}>
+          <X className="size-4" />
+        </Button>
+      </div>
+      <TaskDetails task={selected} busy={busy} onDecide={onDecide} />
+    </motion.aside>}
   </div>
 }
 
-function TaskDetails({ task }: { task: ExecutionTask }) {
+function TaskDetails({ task, busy, onDecide }: { task: ExecutionTask; busy: boolean; onDecide?: WorkflowGraphProps['onDecide'] }) {
   const agent = task.agent_profile_snapshot?.name
   return <div className="space-y-4"><div><p className="text-xs text-muted-foreground">Tâche</p><h2 className="mt-1 font-semibold">{task.title}</h2><Badge className="mt-2 capitalize" variant="outline">{task.status.replaceAll('_', ' ')}</Badge></div>
     {task.description && <section><h3 className="text-xs font-medium">Description</h3><p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{task.description}</p></section>}
@@ -95,5 +118,13 @@ function TaskDetails({ task }: { task: ExecutionTask }) {
     {task.expected_output && <section><h3 className="text-xs font-medium">Résultat attendu</h3><p className="mt-1 text-sm text-muted-foreground">{task.expected_output}</p></section>}
     {task.result && <section><h3 className="text-xs font-medium">Résultat</h3><p className="mt-1 max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg bg-muted/60 p-3 text-sm">{task.result}</p></section>}
     {task.error && <section><h3 className="text-xs font-medium text-destructive">Erreur</h3><p className="mt-1 text-sm text-destructive">{task.error}</p></section>}
+    {task.status === 'awaiting_approval' && task.approval_id && onDecide && <section className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+      <h3 className="text-sm font-medium">Approbation requise</h3>
+      <p className="mt-1 text-xs text-muted-foreground">Cette action attend votre décision avant de poursuivre.</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button size="sm" disabled={busy} onClick={() => onDecide(task.approval_id!, 'approve')}><Check />Approuver</Button>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => onDecide(task.approval_id!, 'reject')}>Refuser</Button>
+      </div>
+    </section>}
   </div>
 }

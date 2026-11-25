@@ -1,6 +1,6 @@
 import logging
 import re
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -168,6 +168,7 @@ async def stream_assistant(
     tools: Sequence[object] = (),
     context: object | None = None,
     mcp_servers: Sequence[object] = (),
+    on_usage: Callable[[object], None] | None = None,
 ) -> AsyncIterator[str | McpActivity]:
     """Stream user-visible text and MCP tool activity, never arguments, results, or reasoning."""
     agent = build_assistant(settings, tools, mcp_servers) if tools or mcp_servers else build_assistant(settings)
@@ -197,3 +198,5 @@ async def stream_assistant(
         raise
     finally:
         await session.close()
+        if result is not None and on_usage is not None:
+            on_usage(result)

@@ -5,7 +5,6 @@ import {
   Library,
   MessageSquareText,
   type LucideIcon,
-  Settings2,
   Workflow,
 } from 'lucide-react'
 
@@ -23,7 +22,6 @@ export const navigationItems: NavigationItem[] = [
   { to: '/agents', label: 'Agents', icon: Bot },
   { to: '/executions', label: 'Exécutions', icon: Workflow },
   { to: '/analytics', label: 'Analytics', icon: ChartNoAxesCombined },
-  { to: '/settings', label: 'Paramètres', icon: Settings2 },
 ]
 
 export const pageMeta: Record<string, { title: string; description: string }> = {
@@ -40,10 +38,14 @@ export const pageMeta: Record<string, { title: string; description: string }> = 
   },
   '/analytics': {
     title: 'Analytics',
-    description: 'Consultez les statistiques de conversations et d’exécutions de votre compte.',
+    description: 'Consultez les statistiques de conversations et d’exécutions de cet espace.',
   },
-  '/settings': {
-    title: 'Paramètres',
-    description: 'Personnalisez votre espace Mutual-AId.',
-  },
+}
+
+export function getPageMeta(pathname: string): { title: string; description: string } {
+  return pageMeta[pathname]
+    ?? (pathname.startsWith('/agents/') ? { title: 'Fiche agent', description: 'Consultez et configurez un agent spécialisé.' } : undefined)
+    ?? (pathname.startsWith('/conversations/') ? { title: 'Conversation', description: 'Votre échange avec Mutual-AId.' } : undefined)
+    ?? (pathname.startsWith('/executions/') ? { title: 'Workflow', description: 'Inspectez les tâches et les dépendances de cette exécution.' } : undefined)
+    ?? { title: 'Page introuvable', description: 'Cette page ne fait pas partie de votre espace.' }
 }

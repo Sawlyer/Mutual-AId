@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, CircleAlert, Clock3, Download, Eye, LoaderCircle, Pause, Play, Square, Workflow, X } from 'lucide-react'
+import { ArrowLeft, Check, Circle, CircleAlert, Clock3, Download, Eye, LoaderCircle, Pause, Play, Square, X } from 'lucide-react'
 import { Link, useParams } from 'react-router'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,7 @@ import type { Execution, ExecutionArtifact, ExecutionArtifactContent, ExecutionE
 import { WorkflowGraph } from '@/features/executions/workflow-graph'
 import { ArtifactPreview } from '@/features/executions/artifact-preview'
 import { inspectResultCompleteness } from '@/features/executions/result-completeness'
+import { Timeline, TimelineContent, TimelineDate, TimelineHeader, TimelineIndicator, TimelineItem, TimelineSeparator, TimelineTitle } from '@/components/reui/timeline'
 
 const terminal = new Set<Execution['status']>(['completed', 'partial', 'failed', 'cancelled', 'interrupted'])
 const executionStatusLabels: Record<Execution['status'], string> = {
@@ -231,7 +232,6 @@ export function ExecutionPage() {
     }
   }
 
-  const completedTasks = execution?.tasks.filter((task) => task.status === 'completed').length ?? 0
   const resultCompleteness = execution
     ? inspectResultCompleteness(execution.status, execution.tasks, artifacts)
     : null
@@ -276,7 +276,6 @@ export function ExecutionPage() {
       {execution && (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="secondary">{completedTasks}/{execution.tasks.length} tâches terminées</Badge>
             {!terminal.has(execution.status) && (
               <Button variant="outline" size="sm" disabled={busy} onClick={() => void cancel()}>
                 <Square />
@@ -312,7 +311,7 @@ export function ExecutionPage() {
             </span>
           </div>
 
-          <WorkflowGraph execution={execution} />
+          <WorkflowGraph execution={execution} busy={busy} onDecide={decide} />
 
           {resultCompleteness && (
             <Card aria-live="polite">
@@ -350,68 +349,7 @@ export function ExecutionPage() {
             </Card>
           )}
 
-          <section aria-label="État des tâches" className="space-y-3">
-            <h2 className="text-sm font-semibold">Tâches</h2>
-            {execution.tasks.map((task, index) => (
-              <Card key={task.id}>
-                <CardContent className="space-y-3 p-4 sm:p-5">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="flex items-start gap-3">
-                      <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-muted text-xs font-medium">
-                        {index + 1}
-                      </span>
-                      <div>
-                        <h3 className="font-medium">{task.title}</h3>
-                        {task.description && <p className="mt-1 text-sm text-muted-foreground">{task.description}</p>}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline">{taskStatusLabels[task.status] ?? task.status}</Badge>
-                      {task.attempts > 0 && (
-                        <Badge variant="secondary">
-                          {task.attempts} {task.attempts === 1 ? 'tentative' : 'tentatives'}
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-
-                  {task.agent_profile_snapshot && (
-                    <p className="text-xs text-muted-foreground">
-                      Agent : {String(task.agent_profile_snapshot.name ?? 'Agent')}
-                    </p>
-                  )}
-                  {task.dependencies.length > 0 && (
-                    <p className="text-xs text-muted-foreground">Dépend de : {task.dependencies.join(', ')}</p>
-                  )}
-                  {task.error && <p role="alert" className="text-sm text-destructive">{task.error}</p>}
-                  {task.result && (
-                    <div className="rounded-lg bg-muted/60 p-3 text-sm leading-relaxed">
-                      <p className="mb-1 text-xs font-medium text-muted-foreground">Résultat</p>
-                      <p className="whitespace-pre-wrap">{task.result}</p>
-                    </div>
-                  )}
-                  {task.status === 'awaiting_approval' && task.approval_id && (
-                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
-                      <p className="text-sm font-medium">Cette action attend votre approbation</p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Le système ne poursuit pas cette action avant votre décision explicite.
-                      </p>
-                      <div className="mt-3 flex gap-2">
-                        <Button size="sm" disabled={busy} onClick={() => void decide(task.approval_id!, 'approve')}>
-                          Approuver
-                        </Button>
-                        <Button size="sm" variant="outline" disabled={busy} onClick={() => void decide(task.approval_id!, 'reject')}>
-                          Refuser
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            ))}
-          </section>
-
-          <section aria-label="Résultats" className="space-y-3">
+          {(artifacts.length > 0 || previewArtifact) && <section aria-label="Résultats" className="space-y-3">
             <div>
               <h2 className="text-sm font-semibold">Résultats</h2>
               <p className="mt-1 text-xs text-muted-foreground">Fichiers produits par les tâches terminées.</p>
@@ -454,9 +392,7 @@ export function ExecutionPage() {
                   </Card>
                 ))}
               </div>
-            ) : (
-              <Card><CardContent className="p-4 text-sm text-muted-foreground">Aucun résultat n’est disponible pour le moment.</CardContent></Card>
-            )}
+            ) : null}
             {previewArtifact && (
               <Card>
                 <CardContent className="space-y-3 p-4">
@@ -473,7 +409,7 @@ export function ExecutionPage() {
                 </CardContent>
               </Card>
             )}
-          </section>
+          </section>}
 
           <section aria-label="Activité" className="space-y-3">
             <div className="flex items-center gap-2">
@@ -481,42 +417,38 @@ export function ExecutionPage() {
               <h2 className="text-sm font-semibold">Activité</h2>
             </div>
             {events.length > 0 ? (
-              <ol aria-live="polite" className="space-y-0">
-                {events.map((event) => (
-                  <li key={event.id} className="relative flex gap-3 pb-4 last:pb-0">
-                    <span className="mt-1.5 size-2 shrink-0 rounded-full bg-primary/70" />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                        <p className="text-sm font-medium">{eventLabels[event.event_type] ?? 'Mise à jour'}</p>
-                        <time className="text-xs text-muted-foreground">{displayTime(event.created_at)}</time>
+              <Timeline value={events.length} aria-live="polite" className="w-full">
+                {events.map((event, index) => {
+                  const failed = ['failed', 'blocked', 'cancelled'].includes(event.status)
+                  const done = ['completed', 'verified'].includes(event.status)
+                  const running = ['running', 'validating'].includes(event.status)
+                  const Icon = failed ? CircleAlert : done ? Check : running ? LoaderCircle : Circle
+                  const task = execution.tasks.find((item) => item.id === event.task_id)
+                  return <TimelineItem key={event.id} step={index + 1} className="group-data-[orientation=vertical]/timeline:ms-9 group-data-[orientation=vertical]/timeline:not-last:pb-5">
+                    <TimelineHeader>
+                      {index < events.length - 1 && <TimelineSeparator className="group-data-[orientation=vertical]/timeline:-left-6 group-data-[orientation=vertical]/timeline:h-[calc(100%-1.5rem)] group-data-[orientation=vertical]/timeline:translate-y-6" />}
+                      <TimelineTitle className="mt-0.5 text-sm font-medium">{eventLabels[event.event_type] ?? 'Mise à jour'}</TimelineTitle>
+                      <TimelineIndicator className={`group-data-[orientation=vertical]/timeline:-left-6 flex size-5 items-center justify-center border-none text-muted-foreground ${done ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : failed ? 'bg-destructive/10 text-destructive' : running ? 'bg-primary/10 text-primary' : 'bg-muted'}`}>
+                        <Icon aria-hidden="true" className="size-3" />
+                      </TimelineIndicator>
+                    </TimelineHeader>
+                    <TimelineContent className="text-sm">
+                      <p>{eventDescription(event)}</p>
+                      <div className="mt-1 flex flex-wrap gap-x-3 text-xs">
+                        <span>{taskStatusLabels[event.status] ?? executionStatusLabels[event.status as Execution['status']] ?? event.status}</span>
+                        {task && <span>{task.title}</span>}
+                        {event.agent_id && <span>Agent · {String(task?.agent_profile_snapshot?.name ?? event.agent_id)}</span>}
                       </div>
-                      <p className="mt-0.5 text-sm text-muted-foreground">{eventDescription(event)}</p>
-                      <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-muted-foreground">
-                        <span>État : {taskStatusLabels[event.status] ?? executionStatusLabels[event.status as Execution['status']] ?? 'Inconnu'}</span>
-                        {event.agent_id && (
-                          <span>
-                            Agent : {String(execution.tasks.find((task) => task.id === event.task_id)?.agent_profile_snapshot?.name ?? event.agent_id)}
-                          </span>
-                        )}
-                      </div>
-                      {event.task_id && (
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {execution.tasks.find((task) => task.id === event.task_id)?.title ?? 'Tâche'}
-                        </p>
-                      )}
-                    </div>
-                  </li>
-                ))}
-              </ol>
+                      <TimelineDate dateTime={event.created_at} className="mt-1 mb-0 text-xs">{displayTime(event.created_at)}</TimelineDate>
+                    </TimelineContent>
+                  </TimelineItem>
+                })}
+              </Timeline>
             ) : (
               <Card><CardContent className="p-4 text-sm text-muted-foreground">Les événements apparaîtront ici au démarrage du workflow.</CardContent></Card>
             )}
           </section>
 
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Workflow className="size-4" />
-            Les événements et résultats proviennent de l’exécution enregistrée.
-          </div>
         </>
       )}
     </div>

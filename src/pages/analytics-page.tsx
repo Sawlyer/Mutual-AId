@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Activity, Bot, ChartNoAxesCombined, CircleAlert, LoaderCircle, MessagesSquare, Workflow } from 'lucide-react'
+import { Activity, ArrowDownToLine, ArrowUpFromLine, Bot, ChartNoAxesCombined, CircleAlert, Coins, LoaderCircle, MessagesSquare, Workflow } from 'lucide-react'
+import { Link } from 'react-router'
 import { Card, CardContent } from '@/components/ui/card'
-import { analyticsService, type AnalyticsSummary } from '@/services/analytics-service'
+import { Badge } from '@/components/reui/badge'
+import { analyticsService, type AnalyticsSummary, type TokenUsageMetrics } from '@/services/analytics-service'
 import { scaleExecutionActivity } from './analytics-utils'
 
 const statusLabels: Record<string, string> = {
@@ -17,6 +19,21 @@ const statusColors: Record<string, string> = {
 
 const chartWidth = 560
 const chartHeight = 132
+
+function formatCount(value: number) {
+  return new Intl.NumberFormat('fr-FR').format(value)
+}
+
+function formatUsd(value: number) {
+  return new Intl.NumberFormat('fr-FR', {
+    style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 6,
+  }).format(value)
+}
+
+function estimatedCost(usage: TokenUsageMetrics) {
+  if (usage.estimated_cost_usd !== null) return formatUsd(usage.estimated_cost_usd)
+  return usage.runs ? 'Tarif indisponible' : '—'
+}
 
 export function AnalyticsPage() {
   const [metrics, setMetrics] = useState<AnalyticsSummary | null>(null)
@@ -35,6 +52,9 @@ export function AnalyticsPage() {
     { label: 'Exécutions', value: metrics.executions, icon: Workflow },
     { label: 'Exécutions actives', value: metrics.active_executions, icon: Activity },
     { label: 'Tâches terminées', value: `${metrics.completed_tasks} / ${metrics.tasks}`, icon: Bot },
+    { label: 'Tokens en entrée', value: formatCount(metrics.token_usage.input_tokens), icon: ArrowDownToLine },
+    { label: 'Tokens en sortie', value: formatCount(metrics.token_usage.output_tokens), icon: ArrowUpFromLine },
+    { label: 'Coût OpenAI estimé', value: estimatedCost(metrics.token_usage), icon: Coins },
   ] : []
   const activity = scaleExecutionActivity(metrics?.execution_activity ?? [], chartWidth, chartHeight)
   const activityTotal = metrics?.execution_activity.reduce((sum, point) => sum + point.count, 0) ?? 0
@@ -59,7 +79,7 @@ export function AnalyticsPage() {
       <Card><CardContent className="space-y-5 p-5 sm:p-6">
         <div className="flex items-start justify-between gap-4">
           <div><h2 className="font-heading font-semibold">Activité des exécutions</h2><p className="mt-1 text-sm text-muted-foreground">Nombre d’exécutions lancées par jour · 14 derniers jours</p></div>
-          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><ChartNoAxesCombined className="size-4" /></span>
+          <div className="flex shrink-0 items-center gap-2"><Badge variant="primary-light" size="lg" radius="full">{activityTotal} au total</Badge><span className="grid size-9 place-items-center rounded-lg bg-primary/10 text-primary"><ChartNoAxesCombined className="size-4" /></span></div>
         </div>
         {activityTotal === 0 ? <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Aucune exécution sur cette période. Lancez une orchestration pour voir son activité ici.</p> : <>
           <div className="overflow-hidden">
@@ -77,7 +97,67 @@ export function AnalyticsPage() {
         <StatusBreakdown title="Statut des exécutions" description={`${metrics.executions} exécution${metrics.executions > 1 ? 's' : ''} au total`} statuses={metrics.execution_statuses} />
         <StatusBreakdown title="Statut des tâches" description={`${metrics.tasks} tâche${metrics.tasks > 1 ? 's' : ''} au total`} statuses={metrics.task_statuses} />
       </section>
-      <p className="text-xs text-muted-foreground">Le taux de complétion des tâches est de {metrics.task_completion_percent} %. Ces statistiques reflètent uniquement votre compte.</p>
+      <Card>
+        <CardContent className="space-y-4 p-5 sm:p-6">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="font-heading font-semibold">Consommation par conversation</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Tokens réels remontés par les exécutions du modèle, regroupés par chat.</p>
+            </div>
+            <Badge variant={metrics.token_usage.unpriced_runs ? 'warning-light' : 'primary-light'} size="sm" radius="full">
+              {metrics.token_usage.requests} appels modèle
+            </Badge>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Coûts estimés en USD selon les tarifs OpenAI standards ; les connecteurs et services externes ne sont pas inclus.
+            Les échanges antérieurs à l’activation du suivi n’ont pas de compteurs rétroactifs.
+          </p>
+          {metrics.conversation_usage.length === 0 ? (
+            <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Aucune conversation enregistrée.</p>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-border/70">
+              <table className="w-full min-w-[760px] border-collapse text-left text-sm">
+                <caption className="sr-only">Usage de tokens et coût estimé pour chaque conversation</caption>
+                <thead className="bg-muted/50 text-xs text-muted-foreground">
+                  <tr>
+                    <th scope="col" className="px-4 py-3 font-medium">Conversation</th>
+                    <th scope="col" className="px-4 py-3 text-right font-medium">Entrée</th>
+                    <th scope="col" className="px-4 py-3 text-right font-medium">Sortie</th>
+                    <th scope="col" className="px-4 py-3 text-right font-medium">Coût estimé</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/70">
+                  {metrics.conversation_usage.map((conversation) => (
+                    <tr key={conversation.conversation_id} className="align-top transition-colors hover:bg-muted/30">
+                      <th scope="row" className="max-w-[320px] px-4 py-3 font-normal">
+                        <Link to={`/conversations/${conversation.conversation_id}`} className="block truncate font-medium text-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                          {conversation.title}
+                        </Link>
+                        <span className="mt-1 block truncate text-xs text-muted-foreground">
+                          {conversation.models.length ? conversation.models.join(', ') : 'Aucun appel modèle'} · {conversation.message_count} messages · {conversation.requests} appels · {new Intl.DateTimeFormat('fr-FR', { dateStyle: 'medium' }).format(new Date(conversation.updated_at))}
+                        </span>
+                      </th>
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        {formatCount(conversation.input_tokens)}
+                        {conversation.cached_input_tokens > 0 && <span className="mt-1 block text-xs text-muted-foreground">{formatCount(conversation.cached_input_tokens)} en cache</span>}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        {formatCount(conversation.output_tokens)}
+                        {conversation.reasoning_tokens > 0 && <span className="mt-1 block text-xs text-muted-foreground">{formatCount(conversation.reasoning_tokens)} tokens de raisonnement</span>}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        <span className="font-medium">{estimatedCost(conversation)}</span>
+                        {conversation.estimated_cost_usd !== null && <span className="mt-1 block text-xs text-muted-foreground">Entrée {formatUsd((conversation.input_cost_usd ?? 0) + (conversation.cached_input_cost_usd ?? 0))} · Sortie {formatUsd(conversation.output_cost_usd ?? 0)}</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      <p className="text-xs text-muted-foreground">Le taux de complétion des tâches est de {metrics.task_completion_percent} %. Ces statistiques reflètent cet espace de travail.</p>
     </>}
   </div>
 }
@@ -95,7 +175,7 @@ function StatusBreakdown({ title, description, statuses }: { title: string; desc
         {entries.map(([status, count]) => <li key={status} className="flex min-w-0 items-center gap-2 text-sm">
           <span aria-hidden="true" className={`size-2.5 shrink-0 rounded-full ${statusColors[status] ?? 'bg-primary'}`} />
           <span className="min-w-0 flex-1 truncate text-muted-foreground">{statusLabels[status] ?? status}</span>
-          <span className="font-medium tabular-nums">{count}</span>
+          <Badge variant={status === 'completed' ? 'success-light' : status === 'failed' ? 'destructive-light' : ['blocked', 'validating', 'awaiting_approval'].includes(status) ? 'warning-light' : 'primary-light'} size="sm" radius="full" aria-label={`${count} ${statusLabels[status] ?? status}`}>{count}</Badge>
           <span className="w-10 text-right text-xs text-muted-foreground">{Math.round(count / total * 100)} %</span>
         </li>)}
       </ul>

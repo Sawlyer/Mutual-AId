@@ -18,6 +18,7 @@ from app.executions.repository import ExecutionRepository
 from app.executions.reviewer import ExecutionResultReview, ExecutionResultReviewer
 from app.model_settings import model_settings_for
 from app.planning.schemas import ExecutionPlan
+from app.usage import record_model_run_usage
 
 logger = logging.getLogger(__name__)
 RESULT_REVIEW_TIMEOUT_SECONDS = 30
@@ -58,6 +59,7 @@ class AgentTaskExecutor:
         if self.agent_service is not None and task.agent_profile_id:
             instructions = self.agent_service.instructions_for_profile(self.user_id, task.agent_profile_id) or instructions
         execution = self.repository.get(self.user_id, self.execution_id)
+        conversation_id = execution.conversation_id if execution else ""
         dependency_results = {
             candidate.id: candidate.result for candidate in (execution.tasks if execution else [])
             if candidate.id in task.dependencies and candidate.result
@@ -85,8 +87,6 @@ class AgentTaskExecutor:
             "Return the requested user-facing result. Report only information returned by authorized tools."
         )
         if self.mcp_runtime:
-            execution_record = self.repository.get(self.user_id, self.execution_id)
-            conversation_id = execution_record.conversation_id if execution_record else ""
             async with self.mcp_runtime.open_approved_servers(
                 self.user_id, mcp_ids, conversation_id=conversation_id, agent_profile_id=task.agent_profile_id,
             ) as mcp_servers:
@@ -94,7 +94,7 @@ class AgentTaskExecutor:
                     name=str(snapshot.get("name") or "Assistant"), instructions=instructions,
                     model=self.settings.openai_model.strip(), model_settings=model_settings_for(self.settings),
                     tools=tools, mcp_servers=mcp_servers,
-                    mcp_config={"include_server_in_tool_names": True, "failure_error_function": None} if mcp_servers else None,
+                    mcp_config={"include_server_in_tool_names": True, "failure_error_function": None} if mcp_servers else {},
                 )
                 result = await Runner.run(agent, prompt, context=context, max_turns=self.settings.max_agent_turns,
                                           run_config=RunConfig(tracing_disabled=True))
@@ -104,6 +104,11 @@ class AgentTaskExecutor:
                           tools=tools)
             result = await Runner.run(agent, prompt, context=context, max_turns=self.settings.max_agent_turns,
                                       run_config=RunConfig(tracing_disabled=True))
+        if conversation_id:
+            record_model_run_usage(
+                self.database, self.settings, conversation_id, "task", result,
+                execution_id=self.execution_id, task_id=task.id,
+            )
         output = result.final_output
         if not isinstance(output, str) or not output.strip():
             raise RuntimeError("Task returned no user-facing result")
@@ -139,6 +144,12 @@ class AgentTaskExecutor:
             max_turns=1,
             run_config=RunConfig(tracing_disabled=True),
         )
+        execution = self.repository.get(self.user_id, self.execution_id)
+        if execution:
+            record_model_run_usage(
+                self.database, self.settings, execution.conversation_id, "task_revision", result,
+                execution_id=self.execution_id, task_id=task.id,
+            )
         output = result.final_output
         if not isinstance(output, TaskRevision):
             raise RuntimeError("Task revision returned an invalid response")

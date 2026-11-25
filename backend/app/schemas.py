@@ -14,6 +14,28 @@ class ApprovalDecision(BaseModel):
     decision: Literal["approve", "reject"]
 
 
+class AnalyticsTokenUsageRead(BaseModel):
+    runs: int
+    requests: int
+    input_tokens: int
+    output_tokens: int
+    cached_input_tokens: int
+    reasoning_tokens: int
+    input_cost_usd: float | None
+    cached_input_cost_usd: float | None
+    output_cost_usd: float | None
+    estimated_cost_usd: float | None
+    unpriced_runs: int
+
+
+class ConversationTokenUsageRead(AnalyticsTokenUsageRead):
+    conversation_id: str
+    title: str
+    updated_at: datetime
+    message_count: int
+    models: list[str]
+
+
 class AnalyticsRead(BaseModel):
     conversations: int
     executions: int
@@ -24,6 +46,8 @@ class AnalyticsRead(BaseModel):
     execution_statuses: dict[str, int]
     task_statuses: dict[str, int]
     execution_activity: list["AnalyticsExecutionActivityRead"]
+    token_usage: AnalyticsTokenUsageRead
+    conversation_usage: list[ConversationTokenUsageRead]
 
 
 class AnalyticsExecutionActivityRead(BaseModel):
@@ -31,50 +55,7 @@ class AnalyticsExecutionActivityRead(BaseModel):
     count: int = Field(ge=0)
 
 
-class AuthRegister(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    email: str = Field(min_length=5, max_length=254)
-    password: str = Field(min_length=12, max_length=128)
-
-    @field_validator("name")
-    @classmethod
-    def clean_name(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("Name is required")
-        return value
-
-    @field_validator("email")
-    @classmethod
-    def normalize_email(cls, value: str) -> str:
-        value = value.strip().lower()
-        local, separator, domain = value.partition("@")
-        if not separator or not local or "." not in domain or any(char.isspace() for char in value):
-            raise ValueError("A valid email address is required")
-        return value
-
-
-class AuthLogin(BaseModel):
-    email: str = Field(min_length=5, max_length=254)
-    password: str = Field(min_length=1, max_length=128)
-
-    @field_validator("email")
-    @classmethod
-    def normalize_email(cls, value: str) -> str:
-        value = value.strip().lower()
-        local, separator, domain = value.partition("@")
-        if not separator or not local or "." not in domain or any(char.isspace() for char in value):
-            raise ValueError("A valid email address is required")
-        return value
-
-
-class AuthAccountDelete(BaseModel):
-    password: str = Field(min_length=1, max_length=128)
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class AuthUserRead(BaseModel):
+class WorkspaceIdentity(BaseModel):
     id: str
     email: str
     name: str

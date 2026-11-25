@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Menu, Moon, Sun } from 'lucide-react'
+import { Menu } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { pageMeta } from '@/components/layout/navigation'
-import { useAppStore } from '@/stores/use-app-store'
+import { getPageMeta } from '@/components/layout/navigation'
 import { useLocation } from 'react-router'
 import { chatAdapter } from '@/services/chat-adapters'
 
@@ -14,12 +13,7 @@ interface AppHeaderProps {
 export function AppHeader({ onOpenNavigation }: AppHeaderProps) {
   const [serviceStatus, setServiceStatus] = useState<'checking' | 'ready' | 'missing' | 'offline' | 'demo'>(chatAdapter.mode === 'demo' ? 'demo' : 'checking')
   const { pathname } = useLocation()
-  const page = pageMeta[pathname] ?? (pathname.startsWith('/conversations/') ? { title: 'Conversation', description: 'Votre échange avec Mutual-AId.' } : undefined) ?? (pathname.startsWith('/executions/') ? { title: 'Workflow', description: 'Inspectez les tâches et les dépendances de cette exécution.' } : undefined) ?? {
-    title: 'Page introuvable',
-    description: 'Cette page ne fait pas partie de votre espace.',
-  }
-  const theme = useAppStore((state) => state.theme)
-  const toggleTheme = useAppStore((state) => state.toggleTheme)
+  const page = getPageMeta(pathname)
 
   useEffect(() => {
     if (chatAdapter.mode === 'demo') return
@@ -72,17 +66,6 @@ export function AppHeader({ onOpenNavigation }: AppHeaderProps) {
             <span className={`size-1.5 rounded-full ${dotTone}`} />
             {serviceLabels[serviceStatus]}
           </Badge>
-          <span className="hidden h-5 w-px bg-border sm:block" />
-          <Button
-            type="button"
-            variant="outline"
-            size="icon-lg"
-            aria-label={theme === 'light' ? 'Activer le thème sombre' : 'Activer le thème clair'}
-            title={theme === 'light' ? 'Thème sombre' : 'Thème clair'}
-            onClick={toggleTheme}
-          >
-            {theme === 'light' ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}
-          </Button>
         </div>
       </div>
     </header>

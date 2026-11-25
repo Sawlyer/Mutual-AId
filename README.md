@@ -31,7 +31,7 @@ Docker construit et lance le frontend et le backend. Il n'est pas nécessaire d'
 
 Pour obtenir de vraies réponses IA, créez `backend/.env` à partir de `backend/.env.example` et renseignez `OPENAI_API_KEY` ainsi que `OPENAI_MODEL`. Compose charge automatiquement ce fichier s'il existe. Les clés restent côté backend et ne sont pas intégrées aux images Docker. Sans clé, les conteneurs démarrent mais le backend ne peut pas fournir de réponses OpenAI.
 
-Les comptes, conversations et sessions SQLite sont conservés dans un volume Docker nommé. **Ctrl+C** arrête le lancement au premier plan sans supprimer les données. `docker compose down` arrête et retire les conteneurs, tout en conservant les données. Pour effacer aussi les données locales, utilisez `docker compose down -v`.
+Les conversations et données de l’espace partagé sont conservées dans un volume Docker nommé. **Ctrl+C** arrête le lancement au premier plan sans supprimer les données. `docker compose down` arrête et retire les conteneurs, tout en conservant les données. Pour effacer aussi les données locales, utilisez `docker compose down -v`.
 
 ## Maintenance de SQLite
 
@@ -54,11 +54,11 @@ uv run python -m app.db_maintenance prune-artifacts --retention-days 90
 uv run python -m app.db_maintenance prune-artifacts --retention-days 90 --apply
 ```
 
-Pour un déploiement HTTPS, configurez `AUTH_COOKIE_SECURE=true`, le proxy TLS et `ALLOWED_ORIGINS` avec les origines frontend exactes. Gardez les clés et sauvegardes hors du dépôt et limitez l’accès aux sauvegardes comme à la base active.
+Mutual-AId fonctionne en espace local partagé, sans comptes ni connexion. Ne publiez pas le backend ou l’application sur Internet sans ajouter une authentification adaptée. Gardez les clés et sauvegardes hors du dépôt et limitez l’accès aux sauvegardes comme à la base active.
 
 ### Comptes, secrets et mises à jour
 
-Un utilisateur peut supprimer son compte depuis **Paramètres** après avoir confirmé son mot de passe. Les conversations, exécutions, artefacts, profils, skills, configurations MCP, sessions et identifiants OAuth locaux sont supprimés ensemble. Une suppression est refusée tant qu’une exécution est active. La révocation des jetons Google/GitHub est tentée avant leur suppression locale ; si le fournisseur est indisponible, supprimez aussi l’autorisation depuis les paramètres de sécurité du fournisseur.
+Les données de l’espace sont stockées localement dans SQLite. Pour tout réinitialiser, arrêtez Docker et supprimez le volume de données avec `docker compose down -v`. Pour déconnecter un service externe, utilisez sa page Connecteurs ; si la révocation du fournisseur échoue, retirez aussi l’autorisation depuis ses paramètres de sécurité.
 
 Pour renouveler `OPENAI_API_KEY`, créez la nouvelle clé dans OpenAI, remplacez la valeur dans le gestionnaire de secrets ou `backend/.env`, puis redémarrez le backend. Révoquez l’ancienne clé après vérification du service. `CONNECTOR_TOKEN_ENCRYPTION_KEY` utilise actuellement une clé unique sans migration entre clés : ne la remplacez pas tant que des jetons OAuth ou MCP doivent être conservés. Déconnectez les connecteurs Google/GitHub et supprimez puis recréez les serveurs MCP avec leurs nouveaux secrets avant de changer cette clé.
 
@@ -104,14 +104,13 @@ Dans un autre terminal, depuis la racine du dépôt :
 npm run dev -- --host 127.0.0.1
 ```
 
-Ouvrez l’URL Vite affichée, généralement `http://127.0.0.1:5173`. Le backend expose sa documentation OpenAPI à `http://127.0.0.1:8000/docs` et l’état de configuration à `http://127.0.0.1:8000/api/health`.
+Ouvrez l’URL Vite affichée, généralement `http://127.0.0.1:5173`. Mutual-AId utilise un espace local partagé, sans compte ni connexion. Le backend expose sa documentation OpenAPI à `http://127.0.0.1:8000/docs` et l’état de configuration à `http://127.0.0.1:8000/api/health`.
 
-Le mode utilisé par défaut est `openai`. Pour revenir au mode de démonstration local, changez `VITE_CHAT_ADAPTER=demo` dans `.env.local`, puis redémarrez Vite. En développement, Vite relaie `/api` vers FastAPI pour garder la session de connexion sur la même origine. Si le frontend et l’API sont déployés séparément, définissez `VITE_API_BASE_URL` avec l’URL complète de l’API.
+Le mode utilisé par défaut est `openai`. Pour revenir au mode de démonstration local, changez `VITE_CHAT_ADAPTER=demo` dans `.env.local`, puis redémarrez Vite. En développement, Vite relaie `/api` vers FastAPI. Si le frontend et l’API sont déployés séparément, définissez `VITE_API_BASE_URL` avec l’URL complète de l’API.
 
 ## API de chat
 
 - `GET /api/health` : disponibilité et présence de la configuration OpenAI, sans exposer la clé
-- `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout` et `GET /api/auth/me` : comptes et session HttpOnly
 - `GET /api/conversations` et `POST /api/conversations` : lister et créer des conversations
 - `GET /api/conversations/{id}` : consulter une conversation
 - `PATCH /api/conversations/{id}` et `DELETE /api/conversations/{id}` : renommer et supprimer
@@ -120,7 +119,7 @@ Le mode utilisé par défaut est `openai`. Pour revenir au mode de démonstratio
 
 Le flux SSE émet `user`, `delta`, `mcp.activity`, `mcp.suggestion`, `plan.ready`, `execution.created`, `done` et `error`. Seuls les deltas de texte destinés à l’utilisateur sont transmis ; le raisonnement privé et les erreurs détaillées restent côté serveur. Une suggestion MCP ne contient que l’identifiant de fiche, le nom et la catégorie. `mcp.activity` ne contient que l’identifiant d’appel, le nom du serveur, le nom de l’outil et le statut.
 
-Toutes les routes de conversation et de connecteur nécessitent une session. Les routes historiques `/dashboard`, `/missions/*` et `/executions/*` redirigent vers le chat : elles ne créent plus de données de démonstration qui ressemblent à de vraies exécutions.
+Les routes API fonctionnent dans l’espace local partagé et ne prennent aucun identifiant utilisateur depuis le client. N’exposez pas le backend sur Internet sans ajouter une authentification adaptée. Les anciennes URL `/login`, `/register` et `/settings` redirigent vers le chat. Les routes historiques `/dashboard` et `/missions/*` redirigent aussi vers le chat.
 
 ## Connecteurs
 
@@ -147,7 +146,7 @@ Les transports acceptés sont HTTP et HTTPS publics, en mode normal comme dans D
 
 L’API fournit `GET /api/connectors/mcp/catalog`, `POST /api/connectors/mcp/catalog/refresh`, `POST /api/connectors/mcp/suggestions`, `GET/POST /api/connectors/mcp`, `POST /api/connectors/mcp/{id}/refresh`, `PATCH /api/connectors/mcp/{id}`, `PUT /api/connectors/mcp/{id}/tools`, `DELETE /api/connectors/mcp/{id}` et `GET/PUT /api/agents/{id}/mcp-tools`. Un jeton exigé par la fiche est chiffré avec `CONNECTOR_TOKEN_ENCRYPTION_KEY` et n’est jamais retourné au frontend.
 
-Le backend stocke les états OAuth à usage unique et les jetons Google chiffrés avec `CONNECTOR_TOKEN_ENCRYPTION_KEY`, séparément par compte. L’outil Calendar revérifie connexion, sélection de conversation et scope à chaque appel, puis ne renvoie que titre, début, fin et statut d’événement. Aucun outil d’écriture Calendar n’est activé. Les comptes disposent d’une inscription, connexion, déconnexion et session persistante en cookie HttpOnly. Les mots de passe sont hachés avec Argon2. Configurez `AUTH_COOKIE_SECURE=true` lorsque l’application est servie en HTTPS.
+Le backend stocke les états OAuth à usage unique et les jetons Google chiffrés avec `CONNECTOR_TOKEN_ENCRYPTION_KEY` dans l’espace local partagé. L’outil Calendar revérifie connexion, sélection de conversation et scope à chaque appel, puis ne renvoie que titre, début, fin et statut d’événement. Aucun outil d’écriture Calendar n’est activé.
 
 Pour activer Google, créez un client OAuth de type application Web dans Google Cloud, activez Gmail API, Google Drive API et/ou Google Calendar API selon les services voulus, puis ajoutez exactement `http://127.0.0.1:8000/api/connectors/google_calendar/callback` comme URI de redirection autorisée en local. Copiez `backend/.env.example` vers `backend/.env`, puis définissez `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI` et une clé Fernet stable dans `CONNECTOR_TOKEN_ENCRYPTION_KEY`. Les autorisations sont limitées à la lecture : Gmail readonly, Drive metadata readonly et Calendar readonly. Générez la clé depuis `backend/` avec `uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
 
@@ -179,6 +178,6 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest
 
 ## Données et sécurité
 
-Les conversations produit sont dans `backend/data/mutual_aid.sqlite3`. Le SDK Agents conserve également son historique de session dans la base configurée. Les limites par défaut sont de 12 000 caractères par message, 12 requêtes d’écriture par minute et 5 tours d’agent. Ces limites en mémoire sont adaptées au développement local ; une configuration multi-processus nécessite un limiteur partagé et une authentification avant exposition publique.
+Les conversations produit sont dans `backend/data/mutual_aid.sqlite3`. Le SDK Agents conserve également son historique de session dans la base configurée. Les limites par défaut sont de 12 000 caractères par message, 12 requêtes d’écriture par minute et 5 tours d’agent. Ces limites en mémoire sont adaptées au développement local. Mutual-AId n’ayant pas d’authentification, ne l’exposez pas publiquement.
 
 Les clés sont ignorées par Git via `.env`; seuls les fichiers `.env.example` sans secret sont suivis. N’exposez pas le serveur de développement sur Internet.

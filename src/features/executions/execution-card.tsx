@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowRight, Bot, CircleAlert, LoaderCircle, Workflow } from 'lucide-react'
+import { ArrowRight, CircleAlert, LoaderCircle, Workflow } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Progress } from '@/components/ui/progress'
 import { executionService } from '@/services/execution-service'
 import type { Execution } from '@/types/execution'
+import { ExecutionStepper } from '@/components/examples/c-stepper-7'
 
 const terminal = new Set<Execution['status']>(['completed', 'partial', 'failed', 'cancelled', 'interrupted'])
 const statusLabel: Record<Execution['status'], string> = {
@@ -25,12 +25,12 @@ const statusLabel: Record<Execution['status'], string> = {
 
 interface ExecutionCardProps {
   executionId: string
-  compact?: boolean
   onComplete?: () => void
 }
 
-export function ExecutionCard({ executionId, compact = false, onComplete }: ExecutionCardProps) {
+export function ExecutionCard({ executionId, onComplete }: ExecutionCardProps) {
   const [execution, setExecution] = useState<Execution | null>(null)
+  const [activeTaskStep, setActiveTaskStep] = useState(1)
   const [error, setError] = useState('')
   const notified = useRef(false)
   const onCompleteRef = useRef(onComplete)
@@ -60,12 +60,15 @@ export function ExecutionCard({ executionId, compact = false, onComplete }: Exec
 
     const connect = async () => {
       try {
-        const [current, events] = await Promise.all([
+        const [current, initialEvents] = await Promise.all([
           executionService.get(executionId),
           executionService.listEvents(executionId),
         ])
         if (!active) return
         setExecution(current)
+        const activeIndex = current.tasks.findIndex((task) => ['running', 'awaiting_approval', 'validating', 'ready'].includes(task.status))
+        const nextIndex = activeIndex >= 0 ? activeIndex : current.tasks.findIndex((task) => task.status !== 'completed')
+        setActiveTaskStep(nextIndex >= 0 ? nextIndex + 1 : Math.max(1, current.tasks.length))
         setError('')
         if (terminal.has(current.status)) {
           if (!notified.current) {
@@ -77,7 +80,7 @@ export function ExecutionCard({ executionId, compact = false, onComplete }: Exec
         unsubscribe = executionService.subscribe(executionId, {
           onEvent: () => { void refresh() },
           onTerminal: () => { void refresh() },
-        }, events.at(-1)?.id ?? 0)
+        }, initialEvents.at(-1)?.id ?? 0)
       } catch (cause) {
         if (active) setError(cause instanceof Error ? cause.message : 'Le suivi est indisponible.')
       }
@@ -89,10 +92,6 @@ export function ExecutionCard({ executionId, compact = false, onComplete }: Exec
       unsubscribe()
     }
   }, [executionId])
-
-  const completed = execution?.tasks.filter((task) => task.status === 'completed').length ?? 0
-  const total = execution?.tasks.length ?? 0
-  const progress = total ? Math.round(completed / total * 100) : 0
 
   return (
     <Card className="mt-4 max-w-2xl border-primary/15 bg-card/80">
@@ -108,24 +107,11 @@ export function ExecutionCard({ executionId, compact = false, onComplete }: Exec
         {execution ? (
           <>
             <p className="text-sm text-muted-foreground">{execution.summary}</p>
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span className="flex items-center gap-1">
-                <Bot className="size-3.5" />
-                {new Set(execution.tasks.map((task) => task.agent_profile_id).filter(Boolean)).size} agents mobilisés
-              </span>
-              <span>{completed}/{total} tâches</span>
-            </div>
-            <Progress value={progress} aria-label={`Progression ${progress}%`} />
-            {!compact && (
-              <div className="space-y-2">
-                {execution.tasks.map((task) => (
-                  <div key={task.id} className="flex items-center justify-between gap-3 text-xs">
-                    <span className="truncate">{task.title}</span>
-                    <Badge variant="secondary">{task.status.replaceAll('_', ' ')}</Badge>
-                  </div>
-                ))}
-              </div>
-            )}
+            <ExecutionStepper
+              tasks={execution.tasks}
+              value={Math.min(activeTaskStep, execution.tasks.length)}
+              onValueChange={setActiveTaskStep}
+            />
           </>
         ) : error ? (
           <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">

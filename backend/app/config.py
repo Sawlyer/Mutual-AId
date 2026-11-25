@@ -19,16 +19,16 @@ class Settings(BaseSettings):
     openai_model: str | None = None
     openai_reasoning_effort: Literal[
         "none", "minimal", "low", "medium", "high", "xhigh", "max",
-    ] = "medium"
+    ] = "low"
+    openai_input_price_per_million: float | None = Field(default=None, ge=0)
+    openai_cached_input_price_per_million: float | None = Field(default=None, ge=0)
+    openai_output_price_per_million: float | None = Field(default=None, ge=0)
     database_path: Path = BACKEND_DIR / "data" / "mutual_aid.sqlite3"
     allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"])
     max_agent_turns: int = Field(default=5, ge=1, le=20)
     max_parallel_tasks: int = Field(default=3, ge=1, le=8)
     max_message_chars: int = Field(default=12_000, ge=100, le=50_000)
     requests_per_minute: int = Field(default=12, ge=1, le=120)
-    auth_session_days: int = Field(default=30, ge=1, le=90)
-    auth_cookie_name: str = "mutual_aid_session"
-    auth_cookie_secure: bool = False
     google_oauth_client_id: str | None = None
     google_oauth_client_secret: SecretStr | None = None
     google_oauth_redirect_uri: str | None = None

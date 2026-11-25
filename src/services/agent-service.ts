@@ -2,6 +2,16 @@ import type { AgentCatalog, AgentProfile, AgentProfileInput, AgentSkill, AgentSk
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 
+export class AgentServiceError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'AgentServiceError'
+    this.status = status
+  }
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, {
     credentials: 'include',
@@ -13,7 +23,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   })
   if (!response.ok) {
     const data = await response.json().catch(() => ({})) as { detail?: string }
-    throw new Error(data.detail || 'La demande a échoué. Réessayez.')
+    throw new AgentServiceError(response.status, data.detail || 'La demande a échoué. Réessayez.')
   }
   if (response.status === 204) return undefined as T
   return await response.json() as T
@@ -21,6 +31,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const agentService = {
   list: () => request<AgentCatalog>('/agents'),
+  getProfile: (profileId: string) => request<AgentProfile>(`/agents/${encodeURIComponent(profileId)}`),
   create: (input: AgentProfileInput) => request<AgentProfile>('/agents', { method: 'POST', body: JSON.stringify(input) }),
   update: (id: string, input: Partial<AgentProfileInput>) => request<AgentProfile>(`/agents/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),
   remove: (id: string) => request<void>(`/agents/${encodeURIComponent(id)}`, { method: 'DELETE' }),

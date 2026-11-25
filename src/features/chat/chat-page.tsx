@@ -3,19 +3,22 @@ import { ArrowUp, Check, Copy, Sparkles, StopCircle } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Badge } from '@/components/ui/badge'
+import { Badge } from '@/components/reui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { Bubble, BubbleContent } from '@/components/ui/bubble'
+import { Message, MessageAvatar, MessageContent } from '@/components/ui/message'
+import { MessageScroller, MessageScrollerButton, MessageScrollerContent, MessageScrollerItem, MessageScrollerProvider, MessageScrollerViewport } from '@/components/ui/message-scroller'
 import { ConnectorSelector } from '@/features/chat/connector-selector'
 import { McpActivityList } from '@/features/chat/mcp-activity'
 import { connectedConnectorIds } from '@/features/chat/conversation-connectors'
 import { useConversationsStore } from '@/stores/use-conversations-store'
 import { useOpenAIChatStore } from '@/stores/use-openai-chat-store'
-import { useAuthStore } from '@/stores/use-auth-store'
 import { ChatServiceError, chatAdapter, type ChatBackendHealth, type ConnectorCatalogItem, type McpSuggestion } from '@/services/chat-adapters'
-import type { McpActivity, Message } from '@/types/domain'
+import type { McpActivity, Message as ChatMessage } from '@/types/domain'
 import { ExecutionCard } from '@/features/executions/execution-card'
+import { trackExecutionCompletion } from '@/features/executions/execution-tracking'
 import type { Execution } from '@/types/execution'
 
 const suggestions = [
@@ -26,14 +29,14 @@ const suggestions = [
 const EMPTY_CONNECTOR_IDS: string[] = []
 const pendingMcpSuggestions = new Map<string, McpSuggestion[]>()
 
-function applyMcpActivity(message: Message, activity: McpActivity): Message {
+function applyMcpActivity(message: ChatMessage, activity: McpActivity): ChatMessage {
   const current = message.mcpActivity ?? []
   const index = current.findIndex((item) => item.id === activity.id)
   const mcpActivity = index < 0 ? [...current, activity] : current.map((item, itemIndex) => itemIndex === index ? activity : item)
   return { ...message, mcpActivity }
 }
 
-function stopMcpActivity(message: Message): Message {
+function stopMcpActivity(message: ChatMessage): ChatMessage {
   if (!message.mcpActivity?.some((item) => item.status === 'running')) return message
   return { ...message, mcpActivity: message.mcpActivity.map((item) => item.status === 'running' ? { ...item, status: 'failed' } : item) }
 }
@@ -105,7 +108,7 @@ function McpSuggestionCard({ suggestions, disabled, activatingId, onActivate, on
   </div>
 }
 
-function AssistantMessage({ message, onExecutionComplete }: { message: Message; onExecutionComplete?: () => void }) {
+function AssistantMessage({ message, onExecutionComplete }: { message: ChatMessage; onExecutionComplete?: () => void }) {
   const [copied, setCopied] = useState(false)
   const activity = message.mcpActivity ?? []
   async function copy() {
@@ -113,10 +116,10 @@ function AssistantMessage({ message, onExecutionComplete }: { message: Message; 
     setCopied(true)
     window.setTimeout(() => setCopied(false), 1500)
   }
-  return <article className="group flex gap-3" aria-label="Réponse de Mutual-AId">
-    <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-xl border border-primary/15 bg-primary/8 text-primary"><Sparkles aria-hidden="true" className="size-4" /></span>
-    <div className="min-w-0 flex-1">
-      <div className="mb-1.5 flex flex-wrap items-center gap-2"><span className="text-xs font-semibold">Mutual-AId</span>{message.simulated && <Badge variant="outline" className="h-5 text-[10px]">Réponse simulée</Badge>}</div>
+  return <Message role="article" className="group gap-3" aria-label="Réponse de Mutual-AId">
+    <MessageAvatar className="mt-0.5 size-8 self-start rounded-xl border border-primary/15 bg-primary/8 text-primary"><Sparkles aria-hidden="true" className="size-4" /></MessageAvatar>
+    <MessageContent className="min-w-0 flex-1 gap-0 text-foreground">
+      <div className="mb-1.5 flex flex-wrap items-center gap-2"><span className="text-xs font-semibold">Mutual-AId</span>{message.simulated && <Badge variant="outline" size="sm" className="h-5 text-[10px]">Réponse simulée</Badge>}</div>
       {message.status === 'streaming' && activity.length === 0 && <p role="status" aria-live="polite" className="mb-1 text-xs text-muted-foreground">Mutual-AId rédige…</p>}
       <McpActivityList items={activity} live={message.status === 'streaming'} />
       <div className="chat-markdown max-w-3xl text-sm leading-7 text-foreground/90">
@@ -138,9 +141,9 @@ function AssistantMessage({ message, onExecutionComplete }: { message: Message; 
         {message.status === 'failed' && <span role="alert" className="text-[11px] text-destructive">Réponse interrompue ou indisponible</span>}
         {message.simulated && <span className="text-[10px] text-muted-foreground">Mode démo · aucun modèle IA utilisé</span>}
       </div>
-      {message.executionId && <ExecutionCard executionId={message.executionId} compact onComplete={onExecutionComplete} />}
-    </div>
-  </article>
+      {message.executionId && <ExecutionCard executionId={message.executionId} onComplete={onExecutionComplete} />}
+    </MessageContent>
+  </Message>
 }
 
 function ChatComposer({ onSend, onCancel, initialValue = '', connectors, selectedConnectorIds, onConnectorIdsChange, isSending }: { onSend: (content: string) => Promise<void>; onCancel?: () => void; initialValue?: string; connectors: ConnectorCatalogItem[]; selectedConnectorIds: string[]; onConnectorIdsChange: (connectorIds: string[]) => void; isSending: boolean }) {
@@ -160,7 +163,8 @@ function ChatComposer({ onSend, onCancel, initialValue = '', connectors, selecte
 }
 
 export function ChatPage() {
-  const displayName = useAuthStore((state) => state.user?.name.split(/\s+/)[0] || 'bonjour')
+  const [chatAreaHeight, setChatAreaHeight] = useState<number | null>(null)
+  const displayName = 'bonjour'
   const { conversationId: routeConversationId } = useParams()
   const [pendingConversationId, setPendingConversationId] = useState<string | null>(null)
   const activeConversationId = routeConversationId ?? pendingConversationId
@@ -182,9 +186,7 @@ export function ChatPage() {
   const allMessages = chatAdapter.mode === 'demo' ? demoMessages : remoteMessages
   const conversation = conversations.find((item) => item.id === activeConversationId)
   const messages = useMemo(() => allMessages.filter((message) => message.conversationId === activeConversationId).sort((a, b) => a.createdAt.localeCompare(b.createdAt)), [allMessages, activeConversationId])
-  const scrollRef = useRef<HTMLDivElement>(null)
   const activeRequest = useRef<AbortController | null>(null)
-  const stickToBottom = useRef(true)
   const [suggestion, setSuggestion] = useState('')
   const [requestPending, setRequestPending] = useState(false)
   const [activatingSuggestionId, setActivatingSuggestionId] = useState<string | null>(null)
@@ -202,9 +204,24 @@ export function ChatPage() {
   const mcpSuggestions = mcpSuggestionState.suggestions
   const [health, setHealth] = useState<ChatBackendHealth | null>(null)
   const [connectorCatalog, setConnectorCatalog] = useState<ConnectorCatalogItem[]>([])
-  const lastMessageText = messages.at(-1)?.content
-  const lastActivity = messages.at(-1)?.mcpActivity?.map((item) => `${item.id}:${item.status}`).join('|')
-  useEffect(() => { if (stickToBottom.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }, [messages.length, lastMessageText, lastActivity])
+
+  useEffect(() => {
+    const header = document.querySelector('header')
+    const updateHeight = () => {
+      const headerHeight = header?.getBoundingClientRect().height ?? 0
+      setChatAreaHeight(Math.max(0, window.innerHeight - headerHeight))
+    }
+    updateHeight()
+    const observer = header ? new ResizeObserver(updateHeight) : null
+    if (header && observer) observer.observe(header)
+    window.addEventListener('resize', updateHeight)
+    window.visualViewport?.addEventListener('resize', updateHeight)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', updateHeight)
+      window.visualViewport?.removeEventListener('resize', updateHeight)
+    }
+  }, [])
 
   useEffect(() => {
     if (chatAdapter.mode !== 'openai') return
@@ -280,7 +297,7 @@ export function ChatPage() {
       }
 
       const now = new Date().toISOString()
-      const userMessage: Message = { id: `local-user-${crypto.randomUUID()}`, conversationId: id, role: 'user', content, createdAt: now, status: 'complete', simulated: false }
+      const userMessage: ChatMessage = { id: `local-user-${crypto.randomUUID()}`, conversationId: id, role: 'user', content, createdAt: now, status: 'complete', simulated: false }
       const pendingId = `local-assistant-${crypto.randomUUID()}`
       upsertRemoteMessage(userMessage)
       upsertRemoteMessage({ id: pendingId, conversationId: id, role: 'assistant', content: '', createdAt: now, status: 'streaming', simulated: false })
@@ -290,6 +307,7 @@ export function ChatPage() {
           const current = useOpenAIChatStore.getState().messages.find((message) => message.id === pendingId)
           if (current) upsertRemoteMessage({ ...current, content: current.content + delta })
         }, (execution: Execution) => {
+          trackExecutionCompletion(execution.id)
           const current = useOpenAIChatStore.getState().messages.find((message) => message.id === pendingId)
           if (current) upsertRemoteMessage({ ...current, executionId: execution.id })
         }, (suggestions) => {
@@ -475,9 +493,11 @@ export function ChatPage() {
   const cancelResponse = () => activeRequest.current?.abort()
   const suggestionCard = <McpSuggestionCard suggestions={mcpSuggestions} disabled={requestPending} activatingId={activatingSuggestionId} onActivate={activateSuggestion} onDismiss={dismissSuggestions} />
   const composerBusy = requestPending || activatingSuggestionId !== null
-  return <div className="-mx-5 -mt-6 flex min-h-[calc(100svh-74px)] flex-col sm:-mx-8 sm:-mt-8">
-    <div ref={scrollRef} onScroll={(event) => { const element = event.currentTarget; stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100 }} className="flex-1 overflow-y-auto px-5 sm:px-8">
-      <div className={`mx-auto w-full max-w-3xl ${isWelcome ? 'flex min-h-[min(66svh,700px)] flex-col justify-center py-12' : 'space-y-7 py-8'}`}>
+  return <div style={chatAreaHeight ? { height: `${chatAreaHeight}px` } : undefined} className="-mx-5 -mt-6 -mb-6 flex h-[calc(100svh-102px)] min-h-0 flex-col overflow-hidden sm:-mx-8 sm:-mt-8 sm:-mb-8">
+    <MessageScrollerProvider autoScroll defaultScrollPosition="end">
+    <MessageScroller className="min-h-0 flex-1 px-5 sm:px-8">
+    <MessageScrollerViewport aria-label="Messages de la conversation" className="px-0">
+      <MessageScrollerContent role="log" aria-busy={requestPending} className={`mx-auto w-full max-w-3xl ${isWelcome ? 'flex min-h-[min(66svh,700px)] flex-col justify-center py-12' : 'gap-7 py-8'}`}>
         {isWelcome ? <div className="mx-auto w-full max-w-2xl text-center">
           <span className="mx-auto grid size-14 place-items-center rounded-2xl border border-primary/15 bg-gradient-to-br from-primary/10 to-violet-500/10 text-primary shadow-sm"><Sparkles aria-hidden="true" className="size-6" /></span>
           <p className="mt-6 text-xs font-medium uppercase tracking-[0.16em] text-primary">Espace conversationnel</p>
@@ -492,14 +512,17 @@ export function ChatPage() {
           <div className="mb-8 border-b border-border/70 pb-5"><h2 className="font-heading text-xl font-semibold tracking-tight">{conversation?.title ?? 'Conversation'}</h2><p className="mt-1 text-xs text-muted-foreground">{chatAdapter.mode === 'openai' ? 'Historique enregistré dans SQLite · OpenAI' : 'Conversation enregistrée localement · Mode démo'}</p></div>
           {conversationLoading && messages.length === 0 && <p role="status" className="text-sm text-muted-foreground">Chargement de la conversation…</p>}
           {!conversationLoading && !conversation && chatAdapter.mode === 'openai' && <p role="alert" className="rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">Cette conversation n’a pas pu être chargée. Vérifiez le backend ou retournez à la liste des conversations.</p>}
-          {messages.map((message) => <div key={message.id} className={message.role === 'user' ? 'ml-auto max-w-[88%] sm:max-w-[80%]' : ''}>
-            {message.role === 'user' ? <article className="rounded-2xl rounded-br-md bg-primary px-4 py-3 text-sm leading-relaxed text-primary-foreground" aria-label="Votre message"><p className="whitespace-pre-wrap">{message.content}</p></article> : <AssistantMessage message={message} onExecutionComplete={() => { void chatAdapter.listMessages(message.conversationId).then((items) => setRemoteMessages(message.conversationId, items)) }} />}
-          </div>)}
-          <div className="h-2" />
+          {messages.map((message) => <MessageScrollerItem key={message.id} messageId={message.id}>
+            {message.role === 'user' ? <Message role="article" align="end" aria-label="Votre message"><Bubble align="end"><BubbleContent className="max-w-[88vw] rounded-2xl rounded-br-md px-4 py-3 sm:max-w-[min(72vw,42rem)]"><p className="whitespace-pre-wrap">{message.content}</p></BubbleContent></Bubble></Message> : <AssistantMessage message={message} onExecutionComplete={() => { void chatAdapter.listMessages(message.conversationId).then((items) => setRemoteMessages(message.conversationId, items)) }} />}
+          </MessageScrollerItem>)}
+          <MessageScrollerItem className="h-2" />
         </>}
-      </div>
-    </div>
-    {!isWelcome && <div className="sticky bottom-0 border-t border-border/60 bg-background/90 px-5 py-4 backdrop-blur-xl sm:px-8"><div className="mx-auto max-w-3xl">{chatError && <p role="alert" className="mb-3 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">{chatError}</p>}{suggestionCard}<ChatComposer onSend={async (content) => { await handleSend(content) }} onCancel={cancelResponse} connectors={connectorCatalog} selectedConnectorIds={selectedConnectorIds} onConnectorIdsChange={(ids) => void handleConnectorIdsChange(ids)} isSending={composerBusy} /><p className="mt-2 text-center text-[10px] text-muted-foreground">{chatAdapter.mode === 'openai' ? (selectedConnectorIds.length > 0 ? 'Les outils des serveurs MCP activés peuvent servir à répondre.' : 'Réponses générées par OpenAI · Aucun outil externe n’est activé.') : 'Mutual-AId est en mode démo. Les réponses sont simulées.'}</p></div></div>}
+      </MessageScrollerContent>
+    </MessageScrollerViewport>
+    <MessageScrollerButton direction="end" className="z-10 rounded-full shadow-md" aria-label="Revenir aux derniers messages" />
+    </MessageScroller>
+    </MessageScrollerProvider>
+    {!isWelcome && <div className="sticky bottom-0 shrink-0 border-t border-border/60 bg-background/90 px-5 py-4 backdrop-blur-xl sm:px-8"><div className="mx-auto max-w-3xl">{chatError && <p role="alert" className="mb-3 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">{chatError}</p>}{suggestionCard}<ChatComposer onSend={async (content) => { await handleSend(content) }} onCancel={cancelResponse} connectors={connectorCatalog} selectedConnectorIds={selectedConnectorIds} onConnectorIdsChange={(ids) => void handleConnectorIdsChange(ids)} isSending={composerBusy} /><p className="mt-2 text-center text-[10px] text-muted-foreground">{chatAdapter.mode === 'openai' ? (selectedConnectorIds.length > 0 ? 'Les outils des serveurs MCP activés peuvent servir à répondre.' : 'Réponses générées par OpenAI · Aucun outil externe n’est activé.') : 'Mutual-AId est en mode démo. Les réponses sont simulées.'}</p></div></div>}
     {isWelcome && <div className="mt-auto px-5 pb-5 text-center text-[10px] text-muted-foreground sm:px-8">{chatAdapter.mode === 'openai' ? 'Mutual-AId envoie les messages à votre backend local.' : 'Mutual-AId est en mode démo · Aucun modèle IA ni service externe n’est connecté.'}</div>}
   </div>
 }
