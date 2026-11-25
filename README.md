@@ -1,172 +1,120 @@
 # Mutual-AId
 
-Mutual-AId est une interface de chat React + Vite + TypeScript reliée à un backend FastAPI. Le backend utilise le SDK officiel OpenAI Agents, conserve les conversations dans SQLite et peut planifier les demandes complexes en tâches suivies dans un workflow. Google Calendar est disponible en lecture seule lorsque son OAuth est configuré.
+Mutual-AId est une application de chat qui peut transformer une demande complexe en tâches confiées à des agents spécialisés. Elle comprend un frontend React, une API FastAPI, un planificateur OpenAI, un suivi d’exécution et des connecteurs externes soumis aux autorisations de l’utilisateur.
+
+> L’application utilise un espace de travail local partagé : il n’y a pas de comptes ni de connexion. Ne l’exposez pas sur Internet.
 
 ## Architecture
 
 <p align="center">
   <a href="./.archify/architecture-mutual-aid-20261027-114110/mutual-aid.html">
-    <img src="./.archify/architecture-mutual-aid-20261027-114110/architecture-preview.png" alt="Architecture de Mutual-AId : chat React, API FastAPI, orchestration Agents SDK, stockage SQLite et connecteurs contrôlés" width="100%">
+    <img src="./.archify/architecture-mutual-aid-20261027-114110/architecture-preview.png" alt="Architecture de Mutual-AId" width="100%">
   </a>
   <br>
-  <a href="./.archify/architecture-mutual-aid-20261027-114110/mutual-aid.html"><strong>Télécharger la carte interactive (HTML autonome) →</strong></a>
+  <a href="./.archify/architecture-mutual-aid-20261027-114110/mutual-aid.html"><strong>Explorer la carte d’architecture interactive →</strong></a>
 </p>
 
-Le schéma source-backed résume le parcours du chat, la séparation entre réponse simple et exécution en DAG, la persistance SQLite et les contrôles d’accès des connecteurs.
+## Démarrage avec Docker
 
-Les agents de code s’appuient sur `AGENTS.md` (aussi dans `src/`, `backend/`, `backend/app/connectors/` et `backend/tests/`) et sur `.agents/skills/`. Cursor reprend ce contexte dans `.cursor/rules/` et `.cursor/skills/`. Ce README reste le guide d’installation.
+Prérequis : Docker avec Docker Compose v2.24 ou plus récent. Depuis la racine du dépôt :
 
-## Démarrage rapide avec Docker
+```bash
+cp backend/.env.example backend/.env
+```
 
-Installez et démarrez Docker Desktop (Windows/macOS) ou Docker Engine avec le plugin Docker Compose (Linux), puis lancez cette même commande depuis la racine du dépôt, dans PowerShell, Terminal ou un terminal Linux/macOS :
+Renseignez `OPENAI_API_KEY` et `OPENAI_MODEL` dans `backend/.env`, puis démarrez l’application :
 
 ```bash
 docker compose up --build
 ```
 
-Docker construit et lance le frontend et le backend. Il n'est pas nécessaire d'installer Node.js, Python, `uv`, npm ou Bash sur la machine hôte. Le premier lancement télécharge les images de base et construit les dépendances ; une connexion Internet est nécessaire.
-
 - Application : <http://127.0.0.1:5173>
-- Backend et documentation API : <http://127.0.0.1:8000/docs>
+- API et documentation : <http://127.0.0.1:8000/docs>
 
-Pour obtenir de vraies réponses IA, créez `backend/.env` à partir de `backend/.env.example` et renseignez `OPENAI_API_KEY` ainsi que `OPENAI_MODEL`. Compose charge automatiquement ce fichier s'il existe. Les clés restent côté backend et ne sont pas intégrées aux images Docker. Sans clé, les conteneurs démarrent mais le backend ne peut pas fournir de réponses OpenAI.
-
-Les conversations et données de l’espace partagé sont conservées dans un volume Docker nommé. **Ctrl+C** arrête le lancement au premier plan sans supprimer les données. `docker compose down` arrête et retire les conteneurs, tout en conservant les données. Pour effacer aussi les données locales, utilisez `docker compose down -v`.
-
-## Maintenance de SQLite
-
-Depuis le dossier `backend/`, `uv run python -m app.db_maintenance` fournit des commandes opérateur. Les sauvegardes utilisent l’API SQLite en ligne, incluent les écritures validées du journal WAL, sont vérifiées avec `integrity_check` et ne remplacent jamais un fichier existant. Choisissez une destination durable située hors du dépôt et du volume de données de l’application : une copie conservée dans le même volume ne protège pas d’une perte de ce volume.
+Le premier démarrage construit les images et nécessite une connexion Internet. Les données sont conservées dans le volume Docker `mutual-aid-data`. `Ctrl+C` arrête les services ; `docker compose down` les arrête sans supprimer les données. Pour réinitialiser l’espace local :
 
 ```bash
-# Créer un snapshot pendant que l’application tourne.
-uv run python -m app.db_maintenance backup --destination /chemin-securise/mutual-aid.sqlite3
-
-# Restaurer vers un nouveau fichier, sans écraser la base active.
-uv run python -m app.db_maintenance restore --source /chemin-securise/mutual-aid.sqlite3 --destination ./data/mutual-aid-restored.sqlite3
+docker compose down -v
 ```
 
-Après restauration, arrêtez l’application, vérifiez que le nouveau fichier est bien celui choisi, puis définissez `DATABASE_PATH` vers ce fichier avant de redémarrer. L’application applique ses migrations au démarrage. Pour Docker Compose, `DATABASE_PATH` peut être défini dans le fichier `.env` utilisé par Compose ; sa valeur par défaut reste `/app/backend/data/mutual_aid.sqlite3`. Testez régulièrement une restauration sur une copie distincte avant de dépendre d’une sauvegarde.
+## Démarrage pour le développement
 
-La purge des artefacts est manuelle et limitée aux exécutions terminales. Sans `--apply`, la commande affiche uniquement le nombre d’artefacts plus anciens que la durée indiquée ; contrôlez ce nombre avant toute suppression :
-
-```bash
-uv run python -m app.db_maintenance prune-artifacts --retention-days 90
-uv run python -m app.db_maintenance prune-artifacts --retention-days 90 --apply
-```
-
-Mutual-AId fonctionne en espace local partagé, sans comptes ni connexion. Ne publiez pas le backend ou l’application sur Internet sans ajouter une authentification adaptée. Gardez les clés et sauvegardes hors du dépôt et limitez l’accès aux sauvegardes comme à la base active.
-
-### Comptes, secrets et mises à jour
-
-Les données de l’espace sont stockées localement dans SQLite. Pour tout réinitialiser, arrêtez Docker et supprimez le volume de données avec `docker compose down -v`. Pour déconnecter un service externe, utilisez sa page Connecteurs ; si la révocation du fournisseur échoue, retirez aussi l’autorisation depuis ses paramètres de sécurité.
-
-Pour renouveler `OPENAI_API_KEY`, créez la nouvelle clé dans OpenAI, remplacez la valeur dans le gestionnaire de secrets ou `backend/.env`, puis redémarrez le backend. Révoquez l’ancienne clé après vérification du service. `CONNECTOR_TOKEN_ENCRYPTION_KEY` utilise actuellement une clé unique sans migration entre clés : ne la remplacez pas tant que des jetons OAuth ou MCP doivent être conservés. Déconnectez les connecteurs Google/GitHub et supprimez puis recréez les serveurs MCP avec leurs nouveaux secrets avant de changer cette clé.
-
-Avant chaque mise à jour, créez une sauvegarde vérifiée. Les migrations SQLite sont appliquées au démarrage et ne proposent pas de downgrade automatique : pour revenir à une ancienne version, arrêtez l’application, restaurez une copie de la sauvegarde vers un nouveau fichier, pointez `DATABASE_PATH` sur cette copie et redémarrez avec l’ancienne image. Vérifiez les données restaurées avant de supprimer les fichiers précédents.
-
-SQLite convient à une instance applicative avec un volume persistant et une seule base partagée. Il sérialise les écritures et ne doit pas être monté comme stockage multi-écrivain entre plusieurs hôtes. Si les attentes de verrouillage deviennent régulières ou si plusieurs workers doivent écrire en parallèle, migrez vers un serveur de base de données avant d’augmenter le nombre d’instances.
-
-Compose v2.24 ou plus récent est nécessaire pour que le fichier local `backend/.env` soit facultatif. Il est inclus dans Docker Desktop à jour ; sur Linux, installez le plugin Docker Compose correspondant à votre distribution.
-
-## Démarrage natif (sans Docker)
-
-Pour le développement natif, la commande Bash existante reste disponible. Elle nécessite Node.js 20.19+ ou 22.12+, Python 3.10+, `uv` et `curl` :
+Prérequis : Node.js 22.12+, Python 3.12+, [`uv`](https://docs.astral.sh/uv/) et `curl`. La commande suivante prépare les dépendances et les fichiers d’environnement d’exemple, puis démarre Vite et FastAPI :
 
 ```bash
 npm run dev:all
 ```
 
-Elle installe les dépendances si nécessaire, prépare les fichiers d’environnement d’exemple s’ils n’existent pas, puis démarre Vite et FastAPI. **Ctrl+C arrête proprement les deux serveurs.** Configurez `backend/.env` comme indiqué ci-dessus pour activer les réponses IA. Les données de ce mode natif restent dans `backend/data/`, séparées du volume Docker.
+Ouvrez <http://127.0.0.1:5173>. `Ctrl+C` arrête les deux serveurs. Les données du mode natif sont stockées sous `backend/data/`, séparément du volume Docker.
 
-## Configuration manuelle
+Pour lancer les services séparément, installez les dépendances puis démarrez le backend dans un terminal :
+
+```bash
+cd backend
+uv sync --group dev --locked
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Dans un second terminal, à la racine du dépôt :
+
+```bash
+npm ci
+npm run dev -- --host 127.0.0.1
+```
+
+## Configuration
+
+Les secrets sont lus par le backend depuis `backend/.env`.
+
+| Variable | Utilité |
+| --- | --- |
+| `OPENAI_API_KEY` | Clé API utilisée par le planificateur, les agents et la revue des résultats. |
+| `OPENAI_MODEL` | Modèle compatible avec le SDK OpenAI Agents. |
+| `OPENAI_REASONING_EFFORT` | Niveau de raisonnement ; `low` est la valeur par défaut. |
+| `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI` | OAuth Google pour Gmail, Drive et Calendar. |
+| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_REDIRECT_URI` | OAuth GitHub en lecture seule. |
+| `CONNECTOR_TOKEN_ENCRYPTION_KEY` | Clé Fernet stable pour chiffrer les jetons de connecteurs stockés localement. |
+
+Gmail, Drive et Calendar demandent les API correspondantes dans Google Cloud. Le callback local Google est `http://127.0.0.1:8000/api/connectors/google_calendar/callback`. Pour GitHub, configurez une OAuth App avec le callback `http://127.0.0.1:8000/api/connectors/github/callback` et des permissions de lecture. Après configuration, redémarrez l’application et connectez le service depuis **Connecteurs**.
+
+Pour générer la clé de chiffrement, depuis `backend/` :
+
+```bash
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+## Essayer l’orchestration
+
+Dans une nouvelle conversation, demandez :
+
+> Je reprends une activité physique douce après une longue pause. Je peux consacrer 30 minutes au sport le lundi, le mercredi et le samedi, et je préfère la marche. Propose un programme général sur deux semaines ainsi qu’un planning qui respecte ces créneaux. Vérifie les durées et les jours de repos, indique tes hypothèses et ne crée aucun événement dans mon agenda.
+
+Dans l’exécution, vérifiez le plan, les dépendances, les agents affectés, leurs compétences et la revue du résultat. Dans **Agents**, les profils utilisés doivent être consultables et modifiables. Si le modèle répond sans créer d’exécution, vérifiez `OPENAI_API_KEY`, `OPENAI_MODEL` et les journaux du backend.
+
+### Vérifier le connecteur GitHub
+
+Après avoir configuré et connecté GitHub, activez-le dans le composer et demandez :
+
+> Dans `Sawlyer/Mutual-AId`, donne les cinq issues ouvertes les plus récemment modifiées, avec leur numéro et leur titre. N’effectue aucune modification.
+
+## Fonctionnalités
+
+- Chat avec historique local, réponses en streaming et rendu Markdown.
+- Planification des demandes complexes, graphe de tâches, suivi d’exécution et revue du résultat.
+- Agents spécialisés réutilisables, avec compétences locales modifiables.
+- Connecteurs Google, GitHub et serveurs MCP ; les outils ne sont fournis à l’agent que s’ils sont disponibles et autorisés.
+- Tableau d’analyse des exécutions et de l’usage des modèles.
+
+Les connecteurs intégrés sont en lecture seule. L’application ne réalise pas d’écriture externe ni d’exécution automatique non autorisée.
+
+## Vérifications
 
 À la racine du dépôt :
 
 ```bash
-npm install
-cp .env.example .env.local
-cd backend && uv sync --group dev && cp .env.example .env
-```
-
-Éditez `backend/.env` et renseignez `OPENAI_API_KEY` ainsi que `OPENAI_MODEL`. La clé reste côté backend et n’est jamais chargée par Vite. `ALLOWED_ORIGINS` doit contenir uniquement les origines du frontend autorisées.
-
-## Lancer l’application
-
-Dans un terminal, depuis `backend/` :
-
-```bash
-uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-Dans un autre terminal, depuis la racine du dépôt :
-
-```bash
-npm run dev -- --host 127.0.0.1
-```
-
-Ouvrez l’URL Vite affichée, généralement `http://127.0.0.1:5173`. Mutual-AId utilise un espace local partagé, sans compte ni connexion. Le backend expose sa documentation OpenAPI à `http://127.0.0.1:8000/docs` et l’état de configuration à `http://127.0.0.1:8000/api/health`.
-
-Le mode utilisé par défaut est `openai`. Pour revenir au mode de démonstration local, changez `VITE_CHAT_ADAPTER=demo` dans `.env.local`, puis redémarrez Vite. En développement, Vite relaie `/api` vers FastAPI. Si le frontend et l’API sont déployés séparément, définissez `VITE_API_BASE_URL` avec l’URL complète de l’API.
-
-## API de chat
-
-- `GET /api/health` : disponibilité et présence de la configuration OpenAI, sans exposer la clé
-- `GET /api/conversations` et `POST /api/conversations` : lister et créer des conversations
-- `GET /api/conversations/{id}` : consulter une conversation
-- `PATCH /api/conversations/{id}` et `DELETE /api/conversations/{id}` : renommer et supprimer
-- `GET /api/conversations/{id}/messages` : récupérer son historique
-- `POST /api/conversations/{id}/messages/stream` : envoyer `{ "content": "…" }` et recevoir `text/event-stream`
-
-Le flux SSE émet `user`, `delta`, `mcp.activity`, `mcp.suggestion`, `plan.ready`, `execution.created`, `done` et `error`. Seuls les deltas de texte destinés à l’utilisateur sont transmis ; le raisonnement privé et les erreurs détaillées restent côté serveur. Une suggestion MCP ne contient que l’identifiant de fiche, le nom et la catégorie. `mcp.activity` ne contient que l’identifiant d’appel, le nom du serveur, le nom de l’outil et le statut.
-
-Les routes API fonctionnent dans l’espace local partagé et ne prennent aucun identifiant utilisateur depuis le client. N’exposez pas le backend sur Internet sans ajouter une authentification adaptée. Les anciennes URL `/login`, `/register` et `/settings` redirigent vers le chat. Les routes historiques `/dashboard` et `/missions/*` redirigent aussi vers le chat.
-
-## Connecteurs
-
-La page Connecteurs affiche Gmail, Google Drive, Google Calendar et GitHub, puis un lien vers le catalogue MCP. Gmail, Drive et Calendar utilisent le client OAuth Google commun ; GitHub utilise une OAuth App. Chaque service reste `setup_required` tant que ses paramètres serveur ne sont pas présents et passe en lecture seule après configuration.
-
-- `GET /api/connectors` renvoie le catalogue, les permissions et les outils réellement accessibles à l’utilisateur courant.
-- `GET /api/conversations/{id}/connectors` lit les connecteurs sélectionnés pour la conversation.
-- `PUT /api/conversations/{id}/connectors` enregistre une sélection. Le backend rejette un connecteur déconnecté ou indisponible avec `409`.
-- Le corps de `POST /api/conversations/{id}/messages/stream` accepte `connector_ids`. Le backend compare cette liste aux préférences enregistrées, puis ne fournit au SDK Agents que les outils autorisés et dotés des scopes accordés. Les outils d’écriture sans permission explicite, et ceux qui attendent une validation humaine, ne sont pas donnés à l’agent.
-
-Le catalogue MCP est une page dédiée, `/connectors/mcp`. Elle ne liste que les fiches dont la page du répertoire publie une adresse distante dans le bloc « Serveur MCP hébergé ». L’instantané local conserve le nom, la description, la catégorie, l’URL de fiche, les badges, cette adresse et l’indication qu’un jeton utilisateur est obligatoire. Les commandes d’installation et les URL citées seulement dans le texte ne sont pas utilisées. La recherche et les suggestions restent sur la machine ; le texte d’un prompt n’est pas envoyé au répertoire.
-
-Pour rafraîchir l’instantané, depuis `backend/` :
-
-```bash
-uv run python scripts/import_mcp_catalog.py
-```
-
-Si le répertoire répond par un contrôle anti-robot, enregistrez les fiches déjà analysées dans un fichier JSON et lancez `uv run python scripts/import_mcp_catalog.py --from-json fiches.json`. Le résultat est `backend/app/connectors/data/mcp_catalog.sqlite3`.
-
-Le bouton Mettre à jour relit `https://mcpservers.org/fr/all` et ajoute les nouvelles fiches de ce type. Si le répertoire ne répond pas, la liste déjà enregistrée est conservée. L’activation affiche l’adresse publiée : c’est celle que le backend appellera. Le jeton n’est demandé que lorsque la fiche l’exige. Il est chiffré et n’est jamais réaffiché; les jetons Bearer ne peuvent être stockés ou envoyés qu’avec une adresse HTTPS. Le serveur est créé désactivé, puis testé. Seuls les outils de lecture approuvés peuvent être activés. Les outils d’écriture ou non annotés restent visibles, marqués comme nécessitant une approbation, et ne sont pas exécutables. Un serveur peut être désactivé sans être supprimé. La sélection `mcp:{id}` reste obligatoire dans la conversation. Un profil d’agent n’appelle un outil que s’il lui est aussi affecté. Le backend revérifie ces conditions immédiatement avant chaque appel. Les redirections HTTP sont refusées. Les journaux et l’interface ne conservent pas les jetons.
-
-Les transports acceptés sont HTTP et HTTPS publics, en mode normal comme dans Docker. Aucune commande stdio n’est acceptée, et Compose ne lance pas de processus MCP. L’exemple `backend/examples/readonly_mcp/server.py` est réservé au développement : il n’écoute que sur `127.0.0.1:8765`, expose uniquement l’outil `health`, et n’est joignable que si `MCP_ALLOW_LOOPBACK=true`. Cette variable reste fausse par défaut et n’est pas définie dans Compose. Les adresses privées, le lien local et les métadonnées cloud restent refusées.
-
-L’API fournit `GET /api/connectors/mcp/catalog`, `POST /api/connectors/mcp/catalog/refresh`, `POST /api/connectors/mcp/suggestions`, `GET/POST /api/connectors/mcp`, `POST /api/connectors/mcp/{id}/refresh`, `PATCH /api/connectors/mcp/{id}`, `PUT /api/connectors/mcp/{id}/tools`, `DELETE /api/connectors/mcp/{id}` et `GET/PUT /api/agents/{id}/mcp-tools`. Un jeton exigé par la fiche est chiffré avec `CONNECTOR_TOKEN_ENCRYPTION_KEY` et n’est jamais retourné au frontend.
-
-Le backend stocke les états OAuth à usage unique et les jetons Google chiffrés avec `CONNECTOR_TOKEN_ENCRYPTION_KEY` dans l’espace local partagé. L’outil Calendar revérifie connexion, sélection de conversation et scope à chaque appel, puis ne renvoie que titre, début, fin et statut d’événement. Aucun outil d’écriture Calendar n’est activé.
-
-Pour activer Google, créez un client OAuth de type application Web dans Google Cloud, activez Gmail API, Google Drive API et/ou Google Calendar API selon les services voulus, puis ajoutez exactement `http://127.0.0.1:8000/api/connectors/google_calendar/callback` comme URI de redirection autorisée en local. Copiez `backend/.env.example` vers `backend/.env`, puis définissez `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI` et une clé Fernet stable dans `CONNECTOR_TOKEN_ENCRYPTION_KEY`. Les autorisations sont limitées à la lecture : Gmail readonly, Drive metadata readonly et Calendar readonly. Générez la clé depuis `backend/` avec `uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
-
-Pour GitHub, créez une OAuth App dans les paramètres développeur, inscrivez `http://127.0.0.1:8000/api/connectors/github/callback` comme callback, puis définissez `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` et `GITHUB_APP_REDIRECT_URI` dans `backend/.env`. GitHub ne demande que les permissions de lecture nécessaires aux dépôts et issues. Conservez tous les secrets uniquement dans `backend/.env` et redémarrez le backend après configuration. La page Connecteurs affichera les services correctement configurés et permettra de lancer/retirer leur connexion.
-
-## Scénario de démonstration MVP
-
-Connectez GitHub, sélectionnez-le dans le composer, puis demandez :
-
-> Dans `Sawlyer/Mutual-AId`, analyse les issues ouvertes. Regroupe-les par thème, indique les blocages et propose trois prochaines actions avec les numéros d’issues. N’effectue aucune modification.
-
-Dans le workflow, montrez le choix ou la création de l’agent GitHub, la tâche de lecture autorisée, puis la revue indépendante du résultat. Les événements affichent les décisions d’affectation ; l’exécution n’écrit rien sur GitHub et ne relance pas automatiquement une action externe. Pour comparer, soumettez la même demande à une réponse simple sans connecteur : elle ne peut pas consulter l’état actuel du dépôt. Cette comparaison rend visible la valeur ajoutée de l’orchestration et de l’accès autorisé aux données.
-
-## Vérifications
-
-Frontend, à la racine :
-
-```bash
 npm run typecheck
 npm run lint
+npm run test
 npm run build
 ```
 
@@ -175,9 +123,3 @@ Tests backend, depuis `backend/` :
 ```bash
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest
 ```
-
-## Données et sécurité
-
-Les conversations produit sont dans `backend/data/mutual_aid.sqlite3`. Le SDK Agents conserve également son historique de session dans la base configurée. Les limites par défaut sont de 12 000 caractères par message, 12 requêtes d’écriture par minute et 5 tours d’agent. Ces limites en mémoire sont adaptées au développement local. Mutual-AId n’ayant pas d’authentification, ne l’exposez pas publiquement.
-
-Les clés sont ignorées par Git via `.env`; seuls les fichiers `.env.example` sans secret sont suivis. N’exposez pas le serveur de développement sur Internet.
