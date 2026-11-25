@@ -1,35 +1,15 @@
-import { useEffect, useState } from 'react'
 import { Menu } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { getPageMeta } from '@/components/layout/navigation'
 import { useLocation } from 'react-router'
-import { chatAdapter } from '@/services/chat-adapters'
 
 interface AppHeaderProps {
   onOpenNavigation: () => void
 }
 
 export function AppHeader({ onOpenNavigation }: AppHeaderProps) {
-  const [serviceStatus, setServiceStatus] = useState<'checking' | 'ready' | 'missing' | 'offline' | 'demo'>(chatAdapter.mode === 'demo' ? 'demo' : 'checking')
   const { pathname } = useLocation()
   const page = getPageMeta(pathname)
-
-  useEffect(() => {
-    if (chatAdapter.mode === 'demo') return
-    let active = true
-    void chatAdapter.checkHealth().then((health) => {
-      if (active) setServiceStatus(health.openai_configured ? 'ready' : 'missing')
-    }).catch(() => { if (active) setServiceStatus('offline') })
-    return () => { active = false }
-  }, [])
-
-  const serviceLabels = { checking: 'Vérification…', ready: 'OpenAI prêt', missing: 'Configuration requise', offline: 'Backend hors ligne', demo: 'Démo' }
-  const serviceTone = serviceStatus === 'ready' ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300'
-    : serviceStatus === 'offline' ? 'border-destructive/20 bg-destructive/5 text-destructive'
-      : serviceStatus === 'missing' ? 'border-amber-500/20 bg-amber-500/5 text-amber-700 dark:text-amber-300'
-        : 'border-border bg-muted/40 text-muted-foreground'
-  const dotTone = serviceStatus === 'ready' ? 'bg-emerald-500' : serviceStatus === 'offline' ? 'bg-destructive' : serviceStatus === 'missing' ? 'bg-amber-500' : 'bg-muted-foreground'
 
   return (
     <header className="sticky top-0 z-20 border-b border-border/80 bg-background/90 px-5 py-4 backdrop-blur-xl sm:px-8">
@@ -56,16 +36,7 @@ export function AppHeader({ onOpenNavigation }: AppHeaderProps) {
           <h1 className="truncate font-heading text-lg font-semibold tracking-tight sm:text-xl">
             {page.title}
           </h1>
-          <p className="mt-0.5 hidden text-xs text-muted-foreground sm:block">
-            {page.description}
-          </p>
-        </div>
-
-        <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-          <Badge variant="outline" className={`hidden h-7 gap-1.5 px-2.5 text-[11px] font-medium sm:inline-flex ${serviceTone}`}>
-            <span className={`size-1.5 rounded-full ${dotTone}`} />
-            {serviceLabels[serviceStatus]}
-          </Badge>
+          {page.description && <p className="mt-0.5 hidden text-xs text-muted-foreground sm:block">{page.description}</p>}
         </div>
       </div>
     </header>

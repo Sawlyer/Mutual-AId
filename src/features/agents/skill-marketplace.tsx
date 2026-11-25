@@ -19,7 +19,7 @@ const sourceLabel: Record<AgentSkill['source'], string> = {
   user: 'Créée par vous', marketplace: 'Marketplace Mutual-AId', generated: 'Générée par l’orchestrateur',
 }
 
-export function SkillMarketplace({ profileId, onProfileChanged }: { profileId?: string; onProfileChanged?: () => void | Promise<void> }) {
+export function SkillMarketplace({ profileId, onProfileChanged, showHeading = true }: { profileId?: string; onProfileChanged?: () => void | Promise<void>; showHeading?: boolean }) {
   const [catalog, setCatalog] = useState<SkillCatalogItem[]>([])
   const [skills, setSkills] = useState<AgentSkill[]>([])
   const [audit, setAudit] = useState<Awaited<ReturnType<typeof agentService.skillAudit>>>([])
@@ -118,8 +118,8 @@ export function SkillMarketplace({ profileId, onProfileChanged }: { profileId?: 
     finally { setBusyId('') }
   }
 
-  return <section aria-labelledby="skill-marketplace-title" className="space-y-4">
-    <div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><Store aria-hidden="true" className="size-5" /></span><div><h3 id="skill-marketplace-title" className="font-semibold">Marketplace de compétences</h3><p className="mt-1 max-w-3xl text-sm text-muted-foreground">Catalogue local maintenu avec Mutual-AId. Une compétence fournit des instructions à l’agent ; elle n’accorde aucun accès aux connecteurs ni aux outils.</p></div></div>
+  return <section aria-labelledby={showHeading ? 'skill-marketplace-title' : undefined} className="space-y-4">
+    {showHeading && <div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><Store aria-hidden="true" className="size-5" /></span><div><h3 id="skill-marketplace-title" className="font-semibold">Bibliothèque de compétences</h3><p className="mt-1 max-w-3xl text-sm text-muted-foreground">Des consignes maintenues localement par Mutual-AId et affectées aux agents selon leurs besoins.</p></div></div>}
 
     <Card><CardContent className="space-y-4 p-4">
       <div className="grid gap-3 sm:grid-cols-[1fr_220px]"><label className="relative"><span className="sr-only">Rechercher une compétence</span><Search aria-hidden="true" className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={(event) => { setLoading(true); setQuery(event.target.value) }} placeholder="Rechercher par nom, usage ou mot-clé…" className="pl-9" /></label><label><span className="sr-only">Filtrer par catégorie</span><select value={category} onChange={(event) => { setLoading(true); setCategory(event.target.value) }} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="">Toutes les catégories</option>{categories.filter((item) => item.id).map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label></div>

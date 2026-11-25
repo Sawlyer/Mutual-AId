@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ArrowLeft, Bot, LoaderCircle, Pencil, Power, RefreshCw, Trash2 } from 'lucide-react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { ArrowLeft, Bot, Check, LoaderCircle, Pencil, Power, RefreshCw, Trash2 } from 'lucide-react'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { Badge } from '@/components/reui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { IconTile } from '@/components/reui/icon-tile'
 import { AgentMcpGrants } from '@/features/agents/agent-mcp-grants'
 import { AgentProfileForm } from '@/features/agents/agent-profile-form'
@@ -20,6 +21,7 @@ function originLabel(profile: AgentProfile) {
 
 export function AgentDetailPage() {
   const { profileId = '' } = useParams()
+  const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const [profile, setProfile] = useState<AgentProfile | null>(null)
   const [loading, setLoading] = useState(true)
@@ -27,6 +29,8 @@ export function AgentDetailPage() {
   const [editing, setEditing] = useState(false)
   const [error, setError] = useState('')
   const [notFound, setNotFound] = useState(false)
+  const [marketplaceOpen, setMarketplaceOpen] = useState(false)
+  const mcpServerAdded = searchParams.get('mcp_added') === '1'
 
   const refresh = useCallback(async () => {
     if (!profileId) return
@@ -111,11 +115,21 @@ export function AgentDetailPage() {
     </header>
 
     {error && <p role="alert" className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</p>}
+    {mcpServerAdded && <p role="status" className="flex items-center gap-2 rounded-lg border border-success/20 bg-success/5 px-4 py-3 text-sm text-success"><Check aria-hidden="true" className="size-4" />Serveur ajouté. Choisissez maintenant les outils à autoriser pour cet agent.</p>}
     {editing && <Card><CardContent className="space-y-4 p-5"><div><h2 className="font-semibold">Profil de l’agent</h2><p className="mt-1 text-sm text-muted-foreground">Définis son rôle, sa description et les consignes générales qui guident son travail.</p></div><AgentProfileForm key={profile.id} profile={profile} saving={saving} onSave={save} onCancel={() => setEditing(false)} /></CardContent></Card>}
 
     <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-      <Card><CardContent className="space-y-5 p-5"><AgentSkillsEditor key={`${profile.id}-${(profile.skill_ids ?? []).join(':')}`} profile={profile} onChange={setProfile} /><div className="border-t border-border/70 pt-5"><SkillMarketplace profileId={profile.id} onProfileChanged={refresh} /></div></CardContent></Card>
+      <Card><CardContent className="space-y-5 p-5"><AgentSkillsEditor key={`${profile.id}-${(profile.skill_ids ?? []).join(':')}`} profile={profile} onChange={setProfile} onOpenMarketplace={() => setMarketplaceOpen(true)} /></CardContent></Card>
       <Card><CardContent className="space-y-5 p-5"><AgentMcpGrants profileId={profile.id} profileName={profile.name} onSaved={() => void refresh()} /><div className="border-t border-border/70 pt-5"><h3 className="text-sm font-semibold">À propos de cet agent</h3><dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2"><div><dt className="text-xs text-muted-foreground">État</dt><dd className="mt-1 font-medium">{profile.enabled ? 'Actif pour les prochaines missions' : 'Mis en pause'}</dd></div><div><dt className="text-xs text-muted-foreground">Origine</dt><dd className="mt-1 font-medium">{originLabel(profile)}</dd></div><div className="sm:col-span-2"><dt className="text-xs text-muted-foreground">Créé le</dt><dd className="mt-1 font-medium">{new Date(profile.created_at).toLocaleDateString('fr-FR', { dateStyle: 'long' })}</dd></div></dl></div></CardContent></Card>
     </div>
+    <Dialog open={marketplaceOpen} onOpenChange={setMarketplaceOpen}>
+      <DialogContent className="max-h-[88svh] w-[min(960px,calc(100vw-2rem))] overflow-y-auto sm:max-w-none">
+        <DialogHeader>
+          <DialogTitle>Bibliothèque de compétences</DialogTitle>
+          <DialogDescription>Choisissez une compétence du catalogue local pour l’affecter à {profile.name}.</DialogDescription>
+        </DialogHeader>
+        <SkillMarketplace profileId={profile.id} onProfileChanged={refresh} showHeading={false} />
+      </DialogContent>
+    </Dialog>
   </div>
 }

@@ -13,6 +13,7 @@ import { ChatServiceError, chatAdapter, type McpCatalogEntry, type McpServerReco
 
 export function McpCatalogPage() {
   const [params, setParams] = useSearchParams()
+  const forAgentId = params.get('for_agent')
   const query = params.get('q') ?? ''
   const category = params.get('category') ?? ''
   const page = Number(params.get('page') ?? '1') || 1
@@ -142,12 +143,16 @@ export function McpCatalogPage() {
         <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-primary/15 bg-primary/5 text-primary"><Cable aria-hidden="true" className="size-5" /></span>
         <div>
           <p className="text-sm text-muted-foreground">Connecteurs</p>
-          <h2 className="mt-0.5 font-heading text-2xl font-semibold tracking-tight">Catalogue MCP</h2>
-          <p className="mt-1 max-w-2xl text-sm leading-relaxed text-muted-foreground">Seuls les serveurs distants gratuits et publiés sont listés, lorsqu’ils répondent avec au moins un outil. Une adresse injoignable, sans outil, ou qui exige une connexion OAuth non prise en charge, est écartée. Une fiche qui demande un jeton reste visible, et l’activation ne le demande que dans ce cas.</p>
+          <h2 className="mt-0.5 font-heading text-2xl font-semibold tracking-tight">Ajouter un serveur MCP</h2>
+          <p className="mt-1 max-w-2xl text-sm leading-relaxed text-muted-foreground">Ajoutez un serveur, vérifiez ses outils, puis choisissez lesquels peuvent être utilisés par vos agents.</p>
         </div>
       </div>
-      <Button variant="outline" size="sm" render={<Link to="/connectors" />}>Retour aux connecteurs</Button>
+      {forAgentId
+        ? <Button variant="outline" size="sm" render={<Link to={`/agents/${encodeURIComponent(forAgentId)}?mcp_added=1`} />} nativeButton={false}>Retour à l’agent</Button>
+        : <Button variant="outline" size="sm" render={<Link to="/connectors" />} nativeButton={false}>Retour aux connecteurs</Button>}
     </div>
+
+    {forAgentId && <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-info/20 bg-info/5 px-4 py-3 text-sm text-info"><p>Ajoutez et testez un serveur ici. Dans « Mes serveurs MCP », approuvez uniquement les outils nécessaires, puis revenez à l’agent pour les lui affecter.</p><Button variant="outline" size="sm" render={<Link to={`/agents/${encodeURIComponent(forAgentId)}?mcp_added=1`} />} nativeButton={false}>Retour à l’agent</Button></div>}
 
     {chatAdapter.mode !== 'openai' ? <Card><CardContent className="py-8 text-sm text-muted-foreground">Le catalogue MCP nécessite le backend connecté.</CardContent></Card> : <>
       <form className="flex flex-col gap-3 sm:flex-row" onSubmit={(event) => { event.preventDefault(); updateSearch({ q: draftQuery.trim(), page: 1 }) }}>
@@ -188,7 +193,7 @@ export function McpCatalogPage() {
               <a className="text-[11px] text-primary underline underline-offset-4" href={entry.source_url} target="_blank" rel="noreferrer">Fiche du répertoire</a>
               {server
                 ? <Button type="button" size="sm" variant="outline" disabled={deactivatingId === server.id} onClick={() => void deactivate(server)}>{deactivatingId === server.id ? 'Désactivation…' : 'Désactiver'}</Button>
-                : <Button type="button" size="sm" variant="outline" onClick={() => { setActivation(entry); updateSearch({ q: query, category, page, activate: entry.id }) }}>Activer</Button>}
+                : <Button type="button" size="sm" variant="outline" onClick={() => { setActivation(entry); updateSearch({ q: query, category, page, activate: entry.id }) }}>Ajouter</Button>}
             </div>
           </CardContent></Card>
         })}
@@ -202,13 +207,17 @@ export function McpCatalogPage() {
         </div>
       </div>
 
-      <section className="space-y-3 border-t border-border/70 pt-6">
-        <div><h3 className="font-heading text-lg font-semibold">Serveurs de ce compte</h3><p className="mt-1 text-xs text-muted-foreground">Un serveur reste inutilisable tant qu’il n’est pas testé, approuvé pour la lecture, activé, puis sélectionné dans une conversation.</p></div>
+      <section id="mcp-workspace-servers" className="space-y-3 border-t border-border/70 pt-6">
+        <div><h3 className="font-heading text-lg font-semibold">Mes serveurs MCP</h3><p className="mt-1 text-xs text-muted-foreground">Les serveurs et outils sont d’abord vérifiés et approuvés dans l’espace de travail. Vous pouvez ensuite choisir les outils autorisés pour chaque agent.</p></div>
         <McpServerForm onCreated={updateServer} onUpdated={updateServer} />
-        {servers.length > 0 ? <div className="grid gap-3 lg:grid-cols-2">{servers.map((server) => <McpServerCard key={server.id} server={server} onChange={updateServer} onDelete={(serverId) => setServers((current) => current.filter((item) => item.id !== serverId))} />)}</div> : <Card><CardContent className="py-8 text-center text-xs text-muted-foreground">Aucun serveur MCP ajouté pour ce compte.</CardContent></Card>}
+        {servers.length > 0 ? <div className="grid gap-3 lg:grid-cols-2">{servers.map((server) => <McpServerCard key={server.id} server={server} onChange={updateServer} onDelete={(serverId) => setServers((current) => current.filter((item) => item.id !== serverId))} />)}</div> : <Card><CardContent className="py-8 text-center text-xs text-muted-foreground">Aucun serveur MCP ajouté.</CardContent></Card>}
       </section>
     </>}
-    <ActivationDialog entry={activation} onOpenChange={(open) => { if (!open) { setActivation(null); updateSearch({ q: query, category, page, activate: null }) } }} onCreated={updateServer} />
+    <ActivationDialog entry={activation} onOpenChange={(open) => { if (!open) { setActivation(null); updateSearch({ q: query, category, page, activate: null }) } }} onCreated={(server) => {
+      updateServer(server)
+      setRefreshNotice('Serveur ajouté. Approuvez les outils souhaités dans « Mes serveurs MCP » avant de les affecter à un agent.')
+      window.setTimeout(() => document.getElementById('mcp-workspace-servers')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 150)
+    }} />
   </div>
 }
 
@@ -216,8 +225,8 @@ function ActivationDialog({ entry, onOpenChange, onCreated }: { entry: McpCatalo
   return <Dialog open={entry !== null} onOpenChange={onOpenChange}>
     <DialogContent>
       <DialogHeader>
-        <DialogTitle>Activer {entry?.name}</DialogTitle>
-        <DialogDescription>L’adresse publiée par l’éditeur est exactement celle que le backend appellera après validation.</DialogDescription>
+        <DialogTitle>Ajouter {entry?.name}</DialogTitle>
+        <DialogDescription>Le serveur sera testé, mais aucun de ses outils ne sera autorisé automatiquement. Vous choisirez les outils à approuver avant de les affecter à un agent.</DialogDescription>
       </DialogHeader>
       {entry && <ActivationForm key={entry.id} entry={entry} onOpenChange={onOpenChange} onCreated={onCreated} />}
     </DialogContent>
@@ -278,15 +287,6 @@ function ActivationForm({ entry, onOpenChange, onCreated }: { entry: McpCatalogE
         } else {
           setConnectUrl(null)
           setError(reason instanceof Error ? reason.message : 'Le serveur a été ajouté, mais la découverte a échoué.')
-        }
-      }
-      if (!discoveryFailed) {
-        const readNames = latest.tools.filter((tool) => tool.access === 'read' && !tool.requires_human_approval).map((tool) => tool.name)
-        if (readNames.length > 0) {
-          try {
-            latest = await chatAdapter.setMcpServerTools(latest.id, readNames)
-            latest = await chatAdapter.setMcpServerEnabled(latest.id, true)
-          } catch { /* The fiche stays listed as activated when no read tool can be enabled. */ }
         }
       }
       onCreated(latest)

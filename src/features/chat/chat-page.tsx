@@ -164,7 +164,6 @@ function ChatComposer({ onSend, onCancel, initialValue = '', connectors, selecte
 
 export function ChatPage() {
   const [chatAreaHeight, setChatAreaHeight] = useState<number | null>(null)
-  const displayName = 'bonjour'
   const { conversationId: routeConversationId } = useParams()
   const [pendingConversationId, setPendingConversationId] = useState<string | null>(null)
   const activeConversationId = routeConversationId ?? pendingConversationId
@@ -500,8 +499,7 @@ export function ChatPage() {
       <MessageScrollerContent role="log" aria-busy={requestPending} className={`mx-auto w-full max-w-3xl ${isWelcome ? 'flex min-h-[min(66svh,700px)] flex-col justify-center py-12' : 'gap-7 py-8'}`}>
         {isWelcome ? <div className="mx-auto w-full max-w-2xl text-center">
           <span className="mx-auto grid size-14 place-items-center rounded-2xl border border-primary/15 bg-gradient-to-br from-primary/10 to-violet-500/10 text-primary shadow-sm"><Sparkles aria-hidden="true" className="size-6" /></span>
-          <p className="mt-6 text-xs font-medium uppercase tracking-[0.16em] text-primary">Espace conversationnel</p>
-          <h2 className="mt-3 font-heading text-3xl font-semibold tracking-tight sm:text-4xl">Bonjour, {displayName}</h2>
+          <h2 className="mt-3 font-heading text-3xl font-semibold tracking-tight sm:text-4xl">Bonjour, que souhaitez-vous accomplir ?</h2>
           <p className="mx-auto mt-3 max-w-lg text-sm leading-relaxed text-muted-foreground">{chatAdapter.mode === 'openai' ? 'Posez une question ou décrivez votre objectif. Les demandes complexes peuvent être planifiées et suivies dans un workflow.' : 'Que souhaitez-vous accomplir aujourd’hui ? Les réponses de ce mode sont simulées.'}</p>
           {chatAdapter.mode === 'openai' && health && !health.openai_configured && <p role="status" className="mx-auto mt-4 max-w-lg rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">Le backend répond, mais la clé OpenAI ou le modèle n’est pas configuré. Complétez <code>backend/.env</code> pour activer les réponses.</p>}
           {chatAdapter.mode === 'openai' && <div className="mt-8 grid gap-2 text-left sm:grid-cols-3">{suggestions.map((item) => <button key={item} type="button" onClick={() => setSuggestion(item)} className="rounded-xl border border-border bg-card p-3.5 text-xs leading-relaxed transition hover:border-primary/30 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="mb-2 block text-primary"><Sparkles aria-hidden="true" className="size-3.5" /></span>{item}</button>)}</div>}
@@ -509,7 +507,7 @@ export function ChatPage() {
           {suggestionCard}
           <div className="mx-auto mt-6 max-w-2xl"><ChatComposer key={suggestion} initialValue={suggestion} onSend={async (content) => { await handleSend(content) }} onCancel={cancelResponse} connectors={connectorCatalog} selectedConnectorIds={selectedConnectorIds} onConnectorIdsChange={(ids) => void handleConnectorIdsChange(ids)} isSending={composerBusy} /></div>
         </div> : <>
-          <div className="mb-8 border-b border-border/70 pb-5"><h2 className="font-heading text-xl font-semibold tracking-tight">{conversation?.title ?? 'Conversation'}</h2><p className="mt-1 text-xs text-muted-foreground">{chatAdapter.mode === 'openai' ? 'Historique enregistré dans SQLite · OpenAI' : 'Conversation enregistrée localement · Mode démo'}</p></div>
+          <div className="mb-8 border-b border-border/70 pb-5"><h2 className="font-heading text-xl font-semibold tracking-tight">{conversation?.title ?? 'Conversation'}</h2></div>
           {conversationLoading && messages.length === 0 && <p role="status" className="text-sm text-muted-foreground">Chargement de la conversation…</p>}
           {!conversationLoading && !conversation && chatAdapter.mode === 'openai' && <p role="alert" className="rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">Cette conversation n’a pas pu être chargée. Vérifiez le backend ou retournez à la liste des conversations.</p>}
           {messages.map((message) => <MessageScrollerItem key={message.id} messageId={message.id}>
@@ -522,7 +520,7 @@ export function ChatPage() {
     <MessageScrollerButton direction="end" className="z-10 rounded-full shadow-md" aria-label="Revenir aux derniers messages" />
     </MessageScroller>
     </MessageScrollerProvider>
-    {!isWelcome && <div className="sticky bottom-0 shrink-0 border-t border-border/60 bg-background/90 px-5 py-4 backdrop-blur-xl sm:px-8"><div className="mx-auto max-w-3xl">{chatError && <p role="alert" className="mb-3 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">{chatError}</p>}{suggestionCard}<ChatComposer onSend={async (content) => { await handleSend(content) }} onCancel={cancelResponse} connectors={connectorCatalog} selectedConnectorIds={selectedConnectorIds} onConnectorIdsChange={(ids) => void handleConnectorIdsChange(ids)} isSending={composerBusy} /><p className="mt-2 text-center text-[10px] text-muted-foreground">{chatAdapter.mode === 'openai' ? (selectedConnectorIds.length > 0 ? 'Les outils des serveurs MCP activés peuvent servir à répondre.' : 'Réponses générées par OpenAI · Aucun outil externe n’est activé.') : 'Mutual-AId est en mode démo. Les réponses sont simulées.'}</p></div></div>}
-    {isWelcome && <div className="mt-auto px-5 pb-5 text-center text-[10px] text-muted-foreground sm:px-8">{chatAdapter.mode === 'openai' ? 'Mutual-AId envoie les messages à votre backend local.' : 'Mutual-AId est en mode démo · Aucun modèle IA ni service externe n’est connecté.'}</div>}
+    {!isWelcome && <div className="sticky bottom-0 shrink-0 border-t border-border/60 bg-background/90 px-5 py-4 backdrop-blur-xl sm:px-8"><div className="mx-auto max-w-3xl">{chatError && <p role="alert" className="mb-3 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">{chatError}</p>}{suggestionCard}<ChatComposer onSend={async (content) => { await handleSend(content) }} onCancel={cancelResponse} connectors={connectorCatalog} selectedConnectorIds={selectedConnectorIds} onConnectorIdsChange={(ids) => void handleConnectorIdsChange(ids)} isSending={composerBusy} /><p className="mt-2 text-center text-[10px] text-muted-foreground">{chatAdapter.mode === 'openai' ? (selectedConnectorIds.length > 0 ? 'Les connecteurs choisis pour ce chat peuvent fournir leurs outils à l’assistant.' : 'Réponses générées par OpenAI · Aucun connecteur n’est sélectionné pour ce chat.') : 'Mutual-AId est en mode démo. Les réponses sont simulées.'}</p></div></div>}
+    {isWelcome && chatAdapter.mode === 'demo' && <div className="mt-auto px-5 pb-5 text-center text-[10px] text-muted-foreground sm:px-8">Mode démo · Les réponses sont simulées.</div>}
   </div>
 }

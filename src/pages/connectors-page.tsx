@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Link } from 'react-router'
 import {
   ArrowUpRight,
   Cable,
@@ -108,6 +109,9 @@ export function ConnectorsPage() {
           <div className="grid grid-cols-2 gap-2 sm:min-w-64">
             <Summary value={connectedCount} label="Connectés" tone="success" />
             <Summary value={connectors.length - connectedCount} label="Disponibles" tone="neutral" />
+            <Button render={<Link to="/connectors/mcp" />} nativeButton={false} variant="outline" className="col-span-2 justify-center">
+              <Cable aria-hidden="true" /> Gérer les serveurs MCP
+            </Button>
           </div>
         </div>
       </header>

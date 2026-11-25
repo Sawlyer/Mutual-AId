@@ -2,7 +2,6 @@ import {
   Bot,
   ChartNoAxesCombined,
   Cable,
-  Library,
   MessageSquareText,
   type LucideIcon,
   Workflow,
@@ -18,7 +17,6 @@ export interface NavigationItem {
 export const navigationItems: NavigationItem[] = [
   { to: '/', label: 'Chat', icon: MessageSquareText, end: true },
   { to: '/connectors', label: 'Connecteurs', icon: Cable, end: true },
-  { to: '/connectors/mcp', label: 'Catalogue MCP', icon: Library },
   { to: '/agents', label: 'Agents', icon: Bot },
   { to: '/executions', label: 'Exécutions', icon: Workflow },
   { to: '/analytics', label: 'Analytics', icon: ChartNoAxesCombined },
@@ -45,7 +43,7 @@ export const pageMeta: Record<string, { title: string; description: string }> = 
 export function getPageMeta(pathname: string): { title: string; description: string } {
   return pageMeta[pathname]
     ?? (pathname.startsWith('/agents/') ? { title: 'Fiche agent', description: 'Consultez et configurez un agent spécialisé.' } : undefined)
-    ?? (pathname.startsWith('/conversations/') ? { title: 'Conversation', description: 'Votre échange avec Mutual-AId.' } : undefined)
+    ?? (pathname.startsWith('/conversations/') ? { title: 'Conversation', description: '' } : undefined)
     ?? (pathname.startsWith('/executions/') ? { title: 'Workflow', description: 'Inspectez les tâches et les dépendances de cette exécution.' } : undefined)
     ?? { title: 'Page introuvable', description: 'Cette page ne fait pas partie de votre espace.' }
 }

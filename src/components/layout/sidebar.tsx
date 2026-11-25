@@ -108,7 +108,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
             <SidebarMenuItem key={conversation.id} className="group relative flex items-center gap-1 rounded-lg pr-1 hover:bg-muted/70">
               {editingId === conversation.id ? (
                 <form className="flex min-w-0 flex-1 gap-1 p-1" onSubmit={(event) => { event.preventDefault(); void saveRename(conversation.id) }}>
-                  <Input autoFocus aria-label="Nom de la conversation" value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} className="h-8 min-w-0 px-2 font-sans text-xs font-normal tracking-normal" onKeyDown={(event) => { if (event.key === 'Escape') setEditingId(null) }} />
+                  <Input autoFocus aria-label="Nom de la conversation" value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} className="h-8 min-w-0 px-2 font-sans !text-xs !leading-4 font-medium tracking-normal" onFocus={(event) => event.currentTarget.select()} onKeyDown={(event) => { if (event.key === 'Escape') setEditingId(null) }} />
                   <Button type="submit" size="sm" className="h-8 px-2">OK</Button>
                 </form>
               ) : <SidebarMenuButton render={<NavLink to={`/conversations/${conversation.id}`} onClick={onNavigate} />} isActive={location.pathname === `/conversations/${conversation.id}`} size="sm" title={conversation.title} className="min-w-0 flex-1 truncate py-1 pr-16 pl-3 font-sans text-xs text-muted-foreground"><span className="block min-w-0 truncate">{conversation.title.length > 28 ? `${conversation.title.slice(0, 27).trimEnd()}…` : conversation.title}</span></SidebarMenuButton>}
