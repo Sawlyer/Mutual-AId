@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from app.schemas import AuthUserRead, ConversationRead, McpActivityRead, MessageRead
+from app.schemas import WorkspaceIdentity, ConversationRead, McpActivityRead, MessageRead
 
 
 def utc_now() -> str:
@@ -83,6 +83,29 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS messages_conversation_order
                     ON messages(conversation_id, created_at, id);
+                CREATE TABLE IF NOT EXISTS model_usage (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                    execution_id TEXT,
+                    task_id TEXT,
+                    stage TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    request_count INTEGER NOT NULL DEFAULT 0,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                    input_cost_usd REAL,
+                    cached_input_cost_usd REAL,
+                    output_cost_usd REAL,
+                    estimated_cost_usd REAL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS model_usage_conversation_order
+                    ON model_usage(conversation_id, created_at);
+                CREATE INDEX IF NOT EXISTS model_usage_owner
+                    ON model_usage(user_id, created_at);
                 CREATE TABLE IF NOT EXISTS connector_connections (
                     user_id TEXT NOT NULL,
                     connector_id TEXT NOT NULL,
@@ -675,105 +698,20 @@ class Database:
         assert result is not None
         return result
 
-    def create_user(self, email: str, name: str, password_hash: str) -> AuthUserRead:
-        user_id = str(uuid4())
-        timestamp = utc_now()
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            is_first_user = connection.execute("SELECT 1 FROM users LIMIT 1").fetchone() is None
-            connection.execute(
-                "INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
-                (user_id, email.lower(), name.strip(), password_hash, timestamp),
-            )
-            if is_first_user:
-                connection.execute("UPDATE conversations SET owner_id = ? WHERE owner_id = 'local-user'", (user_id,))
-                connection.execute("UPDATE connector_connections SET user_id = ? WHERE user_id = 'local-user'", (user_id,))
-                connection.execute("UPDATE conversation_connectors SET user_id = ? WHERE user_id = 'local-user'", (user_id,))
-        return AuthUserRead(id=user_id, email=email.lower(), name=name.strip(), created_at=timestamp)
-
-    def get_user_by_email(self, email: str) -> dict[str, str] | None:
+    def get_local_workspace_user(self) -> WorkspaceIdentity:
+        """Resolve the singleton workspace owner, preserving the original account ID."""
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT id, email, name, password_hash, created_at FROM users WHERE email = ? COLLATE NOCASE",
-                (email.lower(),),
+                "SELECT id, email, name, created_at FROM users ORDER BY created_at, id LIMIT 1"
             ).fetchone()
-        return dict(row) if row else None
-
-    def user_has_active_executions(self, user_id: str) -> bool:
-        with self.connection() as connection:
-            row = connection.execute(
-                "SELECT 1 FROM executions WHERE user_id = ? AND status IN "
-                "('planning', 'running', 'pausing', 'paused', 'awaiting_approval', 'validating') LIMIT 1",
-                (user_id,),
-            ).fetchone()
-        return row is not None
-
-    def delete_user_account(self, user_id: str) -> str:
-        """Delete all data owned by a user, unless an execution is still active."""
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            if connection.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is None:
-                return "not_found"
-
-            active_execution = connection.execute(
-                "SELECT 1 FROM executions WHERE user_id = ? AND status IN "
-                "('planning', 'running', 'pausing', 'awaiting_approval') LIMIT 1",
-                (user_id,),
-            ).fetchone()
-            if active_execution:
-                return "active_executions"
-
-            execution_ids = "SELECT id FROM executions WHERE user_id = ?"
-            connection.execute(f"DELETE FROM execution_final_messages WHERE execution_id IN ({execution_ids})", (user_id,))
-            connection.execute(f"DELETE FROM execution_attempts WHERE execution_id IN ({execution_ids})", (user_id,))
-            connection.execute(f"DELETE FROM execution_approvals WHERE execution_id IN ({execution_ids})", (user_id,))
-            connection.execute(f"DELETE FROM execution_tool_calls WHERE execution_id IN ({execution_ids})", (user_id,))
-            connection.execute(f"DELETE FROM execution_artifacts WHERE execution_id IN ({execution_ids})", (user_id,))
-            connection.execute(f"DELETE FROM execution_events WHERE execution_id IN ({execution_ids})", (user_id,))
-            connection.execute(f"DELETE FROM execution_tasks WHERE execution_id IN ({execution_ids})", (user_id,))
-            connection.execute("DELETE FROM executions WHERE user_id = ?", (user_id,))
-            connection.execute("DELETE FROM conversation_connectors WHERE user_id = ?", (user_id,))
-            connection.execute("DELETE FROM conversations WHERE owner_id = ?", (user_id,))
-            connection.execute("DELETE FROM connector_oauth_states WHERE user_id = ?", (user_id,))
-            connection.execute("DELETE FROM connector_credentials WHERE user_id = ?", (user_id,))
-            connection.execute("DELETE FROM connector_connections WHERE user_id = ?", (user_id,))
-            connection.execute("DELETE FROM mcp_servers WHERE user_id = ?", (user_id,))
-            connection.execute("DELETE FROM agent_profile_skills WHERE user_id = ?", (user_id,))
-            connection.execute("DELETE FROM agent_skill_audit WHERE user_id = ?", (user_id,))
-            connection.execute("DELETE FROM auto_agent_capabilities WHERE user_id = ?", (user_id,))
-            connection.execute("DELETE FROM agent_skills WHERE user_id = ?", (user_id,))
-            connection.execute("DELETE FROM agent_profiles WHERE user_id = ?", (user_id,))
-            connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        return "deleted"
-
-    def get_user(self, user_id: str) -> AuthUserRead | None:
-        with self.connection() as connection:
-            row = connection.execute(
-                "SELECT id, email, name, created_at FROM users WHERE id = ?", (user_id,)
-            ).fetchone()
-        return AuthUserRead(**dict(row)) if row else None
-
-    def create_auth_session(self, token_hash: str, user_id: str, expires_at: str) -> None:
-        with self.connection() as connection:
-            connection.execute("DELETE FROM auth_sessions WHERE expires_at <= ?", (utc_now(),))
-            connection.execute(
-                "INSERT INTO auth_sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-                (token_hash, user_id, utc_now(), expires_at),
-            )
-
-    def get_user_for_session(self, token_hash: str) -> AuthUserRead | None:
-        with self.connection() as connection:
-            row = connection.execute(
-                """SELECT u.id, u.email, u.name, u.created_at
-                   FROM auth_sessions s JOIN users u ON u.id = s.user_id
-                   WHERE s.token_hash = ? AND s.expires_at > ?""",
-                (token_hash, utc_now()),
-            ).fetchone()
-        return AuthUserRead(**dict(row)) if row else None
-
-    def delete_auth_session(self, token_hash: str) -> None:
-        with self.connection() as connection:
-            connection.execute("DELETE FROM auth_sessions WHERE token_hash = ?", (token_hash,))
+        if row:
+            return WorkspaceIdentity(**dict(row))
+        return WorkspaceIdentity(
+            id="local-user",
+            email="local@mutual-aid.invalid",
+            name="Espace de travail",
+            created_at=utc_now(),
+        )
 
     def create_connector_oauth_state(self, state_hash: str, user_id: str, scopes: list[str], redirect_path: str, expires_at: str, connector_id: str = "google_calendar") -> None:
         with self.connection() as connection:
@@ -1014,6 +952,38 @@ class Database:
                    GROUP BY substr(created_at, 1, 10)""",
                 (user_id, first_day.isoformat(), today.isoformat()),
             ).fetchall()
+            usage_row = connection.execute(
+                """SELECT COUNT(*) AS runs, COALESCE(SUM(request_count), 0) AS requests,
+                          COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                          COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                          COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+                          COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+                          COALESCE(SUM(input_cost_usd), 0) AS input_cost_usd,
+                          COALESCE(SUM(cached_input_cost_usd), 0) AS cached_input_cost_usd,
+                          COALESCE(SUM(output_cost_usd), 0) AS output_cost_usd,
+                          COALESCE(SUM(estimated_cost_usd), 0) AS estimated_cost_usd,
+                          COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_runs
+                   FROM model_usage WHERE user_id = ?""",
+                (user_id,),
+            ).fetchone()
+            conversation_usage_rows = connection.execute(
+                """SELECT c.id AS conversation_id, c.title, c.updated_at,
+                          (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+                          COUNT(u.id) AS runs, COALESCE(SUM(u.request_count), 0) AS requests,
+                          COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
+                          COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
+                          COALESCE(SUM(u.cached_input_tokens), 0) AS cached_input_tokens,
+                          COALESCE(SUM(u.reasoning_tokens), 0) AS reasoning_tokens,
+                          COALESCE(SUM(u.input_cost_usd), 0) AS input_cost_usd,
+                          COALESCE(SUM(u.cached_input_cost_usd), 0) AS cached_input_cost_usd,
+                          COALESCE(SUM(u.output_cost_usd), 0) AS output_cost_usd,
+                          COALESCE(SUM(u.estimated_cost_usd), 0) AS estimated_cost_usd,
+                          COALESCE(SUM(CASE WHEN u.id IS NOT NULL AND u.estimated_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_runs,
+                          GROUP_CONCAT(DISTINCT u.model) AS models
+                   FROM conversations c LEFT JOIN model_usage u ON u.conversation_id = c.id AND u.user_id = c.owner_id
+                   WHERE c.owner_id = ? GROUP BY c.id ORDER BY c.updated_at DESC""",
+                (user_id,),
+            ).fetchall()
         executions_by_status = {row["status"]: row["count"] for row in execution_counts}
         tasks_by_status = {row["status"]: row["count"] for row in task_counts}
         total_tasks = sum(tasks_by_status.values())
@@ -1026,6 +996,33 @@ class Database:
             }
             for offset in range(14)
         ]
+        def usage_payload(row: sqlite3.Row, *, include_conversation: bool = False) -> dict[str, object]:
+            runs = int(row["runs"] or 0)
+            unpriced_runs = int(row["unpriced_runs"] or 0)
+            complete_cost = runs > 0 and unpriced_runs == 0
+            payload: dict[str, object] = {
+                "runs": runs,
+                "requests": int(row["requests"] or 0),
+                "input_tokens": int(row["input_tokens"] or 0),
+                "output_tokens": int(row["output_tokens"] or 0),
+                "cached_input_tokens": int(row["cached_input_tokens"] or 0),
+                "reasoning_tokens": int(row["reasoning_tokens"] or 0),
+                "input_cost_usd": float(row["input_cost_usd"] or 0) if complete_cost else None,
+                "cached_input_cost_usd": float(row["cached_input_cost_usd"] or 0) if complete_cost else None,
+                "output_cost_usd": float(row["output_cost_usd"] or 0) if complete_cost else None,
+                "estimated_cost_usd": float(row["estimated_cost_usd"] or 0) if complete_cost else None,
+                "unpriced_runs": unpriced_runs,
+            }
+            if include_conversation:
+                payload.update({
+                    "conversation_id": row["conversation_id"],
+                    "title": row["title"],
+                    "updated_at": row["updated_at"],
+                    "message_count": int(row["message_count"] or 0),
+                    "models": sorted(set(str(row["models"]).split(","))) if row["models"] else [],
+                })
+            return payload
+        token_usage = usage_payload(usage_row)
         return {
             "conversations": conversations,
             "executions": sum(executions_by_status.values()),
@@ -1036,7 +1033,46 @@ class Database:
             "execution_statuses": executions_by_status,
             "task_statuses": tasks_by_status,
             "execution_activity": execution_activity,
+            "token_usage": token_usage,
+            "conversation_usage": [usage_payload(row, include_conversation=True) for row in conversation_usage_rows],
         }
+
+    def record_model_usage(
+        self,
+        conversation_id: str,
+        stage: str,
+        model: str,
+        request_count: int,
+        input_tokens: int,
+        output_tokens: int,
+        cached_input_tokens: int,
+        reasoning_tokens: int,
+        input_cost_usd: float | None,
+        cached_input_cost_usd: float | None,
+        output_cost_usd: float | None,
+        estimated_cost_usd: float | None,
+        execution_id: str | None = None,
+        task_id: str | None = None,
+    ) -> None:
+        values = (request_count, input_tokens, output_tokens, cached_input_tokens, reasoning_tokens)
+        if not any(value > 0 for value in values):
+            return
+        with self.connection() as connection:
+            owner = connection.execute(
+                "SELECT owner_id FROM conversations WHERE id = ?", (conversation_id,),
+            ).fetchone()
+            if owner is None:
+                return
+            connection.execute(
+                """INSERT INTO model_usage (
+                       id, user_id, conversation_id, execution_id, task_id, stage, model, request_count,
+                       input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
+                       input_cost_usd, cached_input_cost_usd, output_cost_usd, estimated_cost_usd, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (str(uuid4()), owner["owner_id"], conversation_id, execution_id, task_id, stage, model,
+                 request_count, input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
+                 input_cost_usd, cached_input_cost_usd, output_cost_usd, estimated_cost_usd, utc_now()),
+            )
 
     def get_connector_connection(self, user_id: str, connector_id: str) -> dict[str, object] | None:
         with self.connection() as connection:

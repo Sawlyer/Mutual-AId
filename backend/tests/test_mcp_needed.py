@@ -148,7 +148,7 @@ def test_an_enabled_matching_server_is_queried_instead_of_proposed(tmp_path, mon
     monkeypatch.setattr(McpRuntime, "open_approved_servers", fake_open)
     with TestClient(create_app(settings)) as client:
         client.post("/api/auth/register", json={"name": "Ready", "email": "ready@example.com", "password": "ready password long enough"})
-        user_id = client.app.state.database.get_user_by_email("ready@example.com")["id"]
+        user_id = client.app.state.database.get_local_workspace_user().id
         server_id = str(uuid4())
         client.app.state.database.create_mcp_server(server_id, user_id, "Solana Data Public", "https://1.1.1.1/mcp", None, "solana-public")
         client.app.state.database.update_mcp_server_tools(user_id, server_id, [{"name": "snapshot", "description": "Read", "access": "read"}])
@@ -249,7 +249,7 @@ def test_a_paid_server_is_not_called(tmp_path, monkeypatch):
     with TestClient(create_app(settings)) as client:
         monkeypatch.setattr(client.app.state.request_router, "route", fake_route)
         client.post("/api/auth/register", json={"name": "Paid", "email": "paid@example.com", "password": "paid password long enough"})
-        user_id = client.app.state.database.get_user_by_email("paid@example.com")["id"]
+        user_id = client.app.state.database.get_local_workspace_user().id
         server_id = _install_server(client.app.state.database, user_id, "47620 Solana Data", "solana-data")
         conversation = client.post("/api/conversations", json={}).json()
         connector_id = f"mcp:{server_id}"
@@ -294,7 +294,7 @@ def test_activation_resumes_the_original_request_without_a_new_prompt(tmp_path, 
     with TestClient(create_app(settings)) as client:
         monkeypatch.setattr(client.app.state.request_router, "route", fake_route)
         client.post("/api/auth/register", json={"name": "Resume", "email": "resume@example.com", "password": "resume password long enough"})
-        user_id = client.app.state.database.get_user_by_email("resume@example.com")["id"]
+        user_id = client.app.state.database.get_local_workspace_user().id
         conversation = client.post("/api/conversations", json={}).json()
         proposal = client.post(
             f"/api/conversations/{conversation['id']}/messages/stream",

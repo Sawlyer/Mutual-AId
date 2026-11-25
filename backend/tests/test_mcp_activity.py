@@ -97,7 +97,7 @@ def test_assistant_stream_reports_mcp_use_without_private_events(tmp_path, monke
     assert SECRET not in repr(items)
 
 
-def test_stream_persists_mcp_activity_for_the_owner_only(tmp_path, monkeypatch):
+def test_stream_persists_mcp_activity_for_the_local_workspace(tmp_path, monkeypatch):
     async def fake_stream(*_args, **_kwargs):
         yield McpActivity("call_1", "Documentation", "search", "running")
         yield "Voici "
@@ -113,9 +113,6 @@ def test_stream_persists_mcp_activity_for_the_owner_only(tmp_path, monkeypatch):
         )
         messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
         with TestClient(client.app) as other:
-            assert other.post("/api/auth/register", json={
-                "name": "Autre", "email": "other@example.com", "password": "a sufficiently long test password",
-            }).status_code == 201
             hidden = other.get(f"/api/conversations/{conversation['id']}/messages")
 
     assert response.status_code == 200
@@ -126,4 +123,4 @@ def test_stream_persists_mcp_activity_for_the_owner_only(tmp_path, monkeypatch):
     assert messages[0]["mcp_activity"] == []
     assert messages[1]["mcp_activity"] == [{"id": "call_1", "server": "Documentation", "tool": "search", "status": "done"}]
     assert messages[1]["content"] == "Voici le résultat."
-    assert hidden.status_code == 404
+    assert hidden.status_code == 200

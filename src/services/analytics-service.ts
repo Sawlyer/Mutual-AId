@@ -8,6 +8,30 @@ export interface AnalyticsSummary {
   execution_statuses: Record<string, number>
   task_statuses: Record<string, number>
   execution_activity: { date: string; count: number }[]
+  token_usage: TokenUsageMetrics
+  conversation_usage: ConversationTokenUsage[]
+}
+
+export interface TokenUsageMetrics {
+  runs: number
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  cached_input_tokens: number
+  reasoning_tokens: number
+  input_cost_usd: number | null
+  cached_input_cost_usd: number | null
+  output_cost_usd: number | null
+  estimated_cost_usd: number | null
+  unpriced_runs: number
+}
+
+export interface ConversationTokenUsage extends TokenUsageMetrics {
+  conversation_id: string
+  title: string
+  updated_at: string
+  message_count: number
+  models: string[]
 }
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')

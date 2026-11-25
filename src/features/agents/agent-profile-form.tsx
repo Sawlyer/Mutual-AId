@@ -3,34 +3,30 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { AgentSkillsEditor } from '@/features/agents/agent-skills-editor'
-import type { AgentCapability, AgentProfile, AgentProfileInput } from '@/types/agent'
+import { agentDomainFromName } from '@/features/agents/agent-profile-utils'
+import type { AgentProfile, AgentProfileInput } from '@/types/agent'
 
 interface Props {
-  capabilities: AgentCapability[]
   profile?: AgentProfile
   saving: boolean
   onSave: (input: AgentProfileInput) => Promise<void>
   onCancel: () => void
-  onProfileSkillsChange?: (skills: AgentProfile['skills'], skillIds: string[]) => void
 }
 
-export function AgentProfileForm({ capabilities, profile, saving, onSave, onCancel, onProfileSkillsChange }: Props) {
+export function AgentProfileForm({ profile, saving, onSave, onCancel }: Props) {
   const [error, setError] = useState('')
-  const [skillIds, setSkillIds] = useState(profile?.skill_ids ?? [])
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
     const input: AgentProfileInput = {
       name: String(data.get('name') || '').trim(),
-      domain: String(data.get('domain') || '').trim(),
+      domain: profile?.domain ?? agentDomainFromName(String(data.get('name') || '')),
       description: String(data.get('description') || '').trim(),
       instructions: String(data.get('instructions') || '').trim(),
-      capability_ids: data.getAll('capability').map(String),
+      capability_ids: profile?.capability_ids ?? [],
       enabled: profile?.enabled ?? true,
-      ...(profile ? { skill_ids: skillIds } : {}),
     }
-    if (!input.name || !input.description || !input.instructions || !input.domain) {
+    if (!input.name || !input.description || !input.instructions) {
       setError('Complétez tous les champs obligatoires.')
       return
     }
@@ -39,23 +35,11 @@ export function AgentProfileForm({ capabilities, profile, saving, onSave, onCanc
     }
   }
 
-  function updateSkills(skills: AgentProfile['skills'], ids: string[]) {
-    setSkillIds(ids)
-    onProfileSkillsChange?.(skills, ids)
-  }
-
-  return <div className="space-y-4">
-  <form className="space-y-4" onSubmit={(event) => void submit(event)}>
-    <div className="grid gap-4 sm:grid-cols-2">
-      <div className="space-y-2"><Label htmlFor="agent-name">Nom</Label><Input id="agent-name" name="name" required maxLength={80} defaultValue={profile?.name} /></div>
-      <div className="space-y-2"><Label htmlFor="agent-domain">Domaine</Label><Input id="agent-domain" name="domain" required maxLength={64} pattern="[a-z][a-z0-9_-]*" placeholder="planning" defaultValue={profile?.domain} /></div>
-    </div>
-    <div className="space-y-2"><Label htmlFor="agent-description">Description</Label><Input id="agent-description" name="description" required maxLength={500} defaultValue={profile?.description} /></div>
+  return <form className="space-y-4" onSubmit={(event) => void submit(event)}>
+    <div className="space-y-2"><Label htmlFor="agent-name">Nom</Label><Input id="agent-name" name="name" required maxLength={80} defaultValue={profile?.name} /></div>
+    <div className="space-y-2"><Label htmlFor="agent-description">Rôle et description</Label><Input id="agent-description" name="description" required maxLength={500} defaultValue={profile?.description} placeholder="Décris ce que cet agent sait prendre en charge" /></div>
     <div className="space-y-2"><Label htmlFor="agent-instructions">Instructions de l’agent</Label><Textarea id="agent-instructions" name="instructions" required maxLength={4000} rows={5} defaultValue={profile?.instructions} /></div>
-    <fieldset className="space-y-2"><legend className="text-sm font-medium">Domaines de spécialisation</legend><p className="text-xs text-muted-foreground">Ces catégories aident le routeur à choisir ou créer un agent adapté. Les compétences sont des consignes propres à l’agent et se gèrent dans la section dédiée.</p><div className="flex flex-wrap gap-3">{capabilities.map((capability) => <label key={capability.id} className="flex items-center gap-2 text-sm"><input type="checkbox" name="capability" value={capability.id} defaultChecked={profile?.capability_ids.includes(capability.id)} />{capability.label}</label>)}</div></fieldset>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onCancel}>Annuler</Button><Button type="submit" disabled={saving}>{saving ? 'Enregistrement…' : profile ? 'Enregistrer' : 'Créer l’agent'}</Button></div>
   </form>
-  {profile && <AgentSkillsEditor profile={{ ...profile, skill_ids: skillIds }} onChange={updateSkills} />}
-  </div>
 }

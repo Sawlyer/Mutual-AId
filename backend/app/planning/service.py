@@ -7,15 +7,19 @@ from openai import AuthenticationError
 from app.agents.models import AgentProfileRead
 from app.config import Settings
 from app.connectors.registry import Connector
+from app.db import Database
 from app.model_settings import model_settings_for
 from app.planning.schemas import ExecutionPlan, PlanningDecision, PlanningRequest, PlanValidationError, PlannedTask, validate_dag
+from app.usage import record_model_run_usage
 
 logger = logging.getLogger(__name__)
 
 PLANNER_INSTRUCTIONS = """You are Mutual-AId's task planner. Decide whether the user's request needs multiple concrete steps.
 Return a concise user-facing summary and, only for complex work, a small task DAG with stable IDs, dependency IDs,
-capability IDs, and connector IDs. Use only capability IDs and connector IDs listed in the input. Never invent
-profiles, tools, OAuth scopes, connector access, or completed actions. You have no tools and must not attempt
+capability IDs, connector IDs, and agent profile IDs. When a known enabled profile's name, description, or skills
+fit a task, set its exact agent_profile_id. Use capability IDs for template-based automatic profile selection only
+when no known profile is a good fit; do not invent a profile. Use only capability IDs and connector IDs listed in
+the input. Never invent tools, OAuth scopes, connector access, or completed actions. You have no tools and must not attempt
 external actions. Use approval_required for any proposed external write. For simple requests, and for any
 request that cannot be expressed with the allowed capability IDs and connector IDs, set
 requires_orchestration=false and return no tasks. Ask a concise clarification when the goal is materially ambiguous.
@@ -32,8 +36,9 @@ class PlanningAuthenticationError(PlanningUnavailable):
 
 
 class Planner:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, database: Database | None = None):
         self.settings = settings
+        self.database = database
 
     async def plan(
         self,
@@ -45,7 +50,7 @@ class Planner:
             raise PlanningUnavailable("Planning is unavailable")
         profile_summary = [
             {
-                "id": profile.id, "name": profile.name, "capability_ids": profile.capability_ids,
+                "id": profile.id, "name": profile.name, "description": profile.description,
                 "skills": [
                     {"name": skill.name, "description": skill.description}
                     for skill in sorted(profile.skills, key=lambda item: (item.name.casefold(), item.id))
@@ -75,6 +80,10 @@ class Planner:
                 agent, input_text, max_turns=1,
                 run_config=RunConfig(tracing_disabled=True),
             )
+            if self.database is not None:
+                record_model_run_usage(
+                    self.database, self.settings, request.conversation_id, "planning", result,
+                )
             decision = result.final_output
             if not isinstance(decision, PlanningDecision):
                 raise PlanValidationError("Planner returned an invalid structured result")

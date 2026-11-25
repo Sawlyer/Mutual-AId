@@ -23,10 +23,6 @@ def make_client(tmp_path, openai_configured=False, **overrides):
     app.state.request_router = SimpleRouter()
     client = TestClient(app)
     app.state.database.initialize()
-    response = client.post("/api/auth/register", json={
-        "name": "Test user", "email": "test@example.com", "password": "a sufficiently long test password",
-    })
-    assert response.status_code == 201
     return client
 
 
@@ -139,6 +135,7 @@ def test_stream_explains_openai_authentication_failure_safely(tmp_path):
 def test_write_requests_are_rate_limited(tmp_path):
     with make_client(tmp_path, requests_per_minute=2) as client:
         conversation = client.post("/api/conversations", json={}).json()
+        client.patch(f"/api/conversations/{conversation['id']}", json={"title": "Premier"})
         response = client.patch(
             f"/api/conversations/{conversation['id']}",
             json={"title": "Limite"},
@@ -154,23 +151,22 @@ def test_cors_rejects_unlisted_origin(tmp_path):
     assert "access-control-allow-origin" not in response.headers
 
 
-def test_execution_api_is_owner_scoped_and_replays_events(tmp_path):
+def test_execution_api_uses_local_workspace_and_replays_events(tmp_path):
     from app.executions.repository import ExecutionRepository
     from app.planning.schemas import ExecutionPlan, PlannedTask
     database_path = tmp_path / "execution-api.sqlite3"
     from fastapi.testclient import TestClient
     with TestClient(main.create_app(Settings(database_path=database_path, openai_api_key="", openai_model=""))) as owner:
         app = owner.app
-        owner.post("/api/auth/register", json={"name": "Owner", "email": "owner@example.com", "password": "owner password long enough"})
         conversation = owner.post("/api/conversations", json={}).json()
-        execution = ExecutionRepository(app.state.database).create(owner.get("/api/auth/me").json()["id"], conversation["id"], ExecutionPlan(summary="Plan", tasks=[PlannedTask(id="one", title="Une tâche")]))
+        user_id = app.state.database.get_local_workspace_user().id
+        execution = ExecutionRepository(app.state.database).create(user_id, conversation["id"], ExecutionPlan(summary="Plan", tasks=[PlannedTask(id="one", title="Une tâche")]))
         assert owner.get(f"/api/executions/{execution.id}").status_code == 200
         events = owner.get(f"/api/executions/{execution.id}/events").json()
         assert events[0]["event_type"] == "execution.created"
     with TestClient(main.create_app(Settings(database_path=database_path, openai_api_key="", openai_model=""))) as other:
-        other.post("/api/auth/register", json={"name": "Other", "email": "other@example.com", "password": "other password long enough"})
-        assert other.get(f"/api/executions/{execution.id}").status_code == 404
-        assert other.get(f"/api/executions/{execution.id}/events").status_code == 404
+        assert other.get(f"/api/executions/{execution.id}").status_code == 200
+        assert other.get(f"/api/executions/{execution.id}/events").status_code == 200
 
 
 def test_complex_message_emits_validated_plan_and_persists_execution(tmp_path):
@@ -207,15 +203,14 @@ def test_invalid_plan_is_never_emitted(tmp_path):
     assert "cycle" not in response.text
 
 
-def test_approval_and_cancellation_api_are_owner_scoped(tmp_path):
+def test_approval_and_cancellation_api_use_local_workspace(tmp_path):
     from fastapi.testclient import TestClient
     from app.planning.schemas import ExecutionPlan, PlannedTask
     from app.executions.repository import ExecutionRepository
     database_path = tmp_path / "approval-api.sqlite3"
     with TestClient(main.create_app(Settings(database_path=database_path, openai_api_key="", openai_model=""))) as owner:
-        owner.post("/api/auth/register", json={"name": "Owner", "email": "owner@example.com", "password": "owner password long enough"})
         conversation = owner.post("/api/conversations", json={}).json()
-        owner_id = owner.get("/api/auth/me").json()["id"]
+        owner_id = owner.app.state.database.get_local_workspace_user().id
         repo = ExecutionRepository(owner.app.state.database)
         execution = repo.create(owner_id, conversation["id"], ExecutionPlan(summary="Écriture", tasks=[PlannedTask(id="write", title="Créer un événement", approval_required=True)]))
         approval_id = execution.tasks[0].approval_id
@@ -224,18 +219,17 @@ def test_approval_and_cancellation_api_are_owner_scoped(tmp_path):
         assert response.status_code == repeated.status_code == 200
         assert response.json()["tasks"][0]["status"] == "ready"
     with TestClient(main.create_app(Settings(database_path=database_path, openai_api_key="", openai_model=""))) as other:
-        other.post("/api/auth/register", json={"name": "Other", "email": "other@example.com", "password": "other password long enough"})
-        assert other.post(f"/api/executions/{execution.id}/approvals/{approval_id}", json={"decision": "approve"}).status_code == 404
-        assert other.post(f"/api/executions/{execution.id}/cancel").status_code == 404
+        assert other.post(f"/api/executions/{execution.id}/approvals/{approval_id}", json={"decision": "approve"}).status_code == 200
+        assert other.post(f"/api/executions/{execution.id}/cancel").status_code == 200
 
 
-def test_resume_interrupted_execution_is_owner_scoped(tmp_path):
+def test_resume_interrupted_execution_uses_local_workspace(tmp_path):
     from app.executions.repository import ExecutionRepository
     from app.planning.schemas import ExecutionPlan, PlannedTask
 
     with make_client(tmp_path) as owner:
         conversation = owner.post("/api/conversations", json={}).json()
-        owner_id = owner.get("/api/auth/me").json()["id"]
+        owner_id = owner.app.state.database.get_local_workspace_user().id
         repository = ExecutionRepository(owner.app.state.database)
         execution = repository.create(owner_id, conversation["id"], ExecutionPlan(
             summary="Reprise", tasks=[PlannedTask(id="safe", title="Tâche sûre")],
@@ -251,20 +245,16 @@ def test_resume_interrupted_execution_is_owner_scoped(tmp_path):
         assert response.status_code == 200
         assert response.json()["status"] == "running"
 
-        owner.post("/api/auth/logout")
-        owner.post("/api/auth/register", json={
-            "name": "Other user", "email": "other@example.com", "password": "a sufficiently long other password",
-        })
-        assert owner.post(f"/api/executions/{execution.id}/resume").status_code == 404
+        assert owner.post(f"/api/executions/{execution.id}/resume").status_code == 200
 
 
-def test_pause_execution_is_owner_scoped_and_idempotent(tmp_path):
+def test_pause_execution_uses_local_workspace_and_is_idempotent(tmp_path):
     from app.executions.repository import ExecutionRepository
     from app.planning.schemas import ExecutionPlan, PlannedTask
 
     with make_client(tmp_path) as owner:
         conversation = owner.post("/api/conversations", json={}).json()
-        owner_id = owner.get("/api/auth/me").json()["id"]
+        owner_id = owner.app.state.database.get_local_workspace_user().id
         repository = ExecutionRepository(owner.app.state.database)
         execution = repository.create(owner_id, conversation["id"], ExecutionPlan(
             summary="Pause", tasks=[PlannedTask(id="task", title="Tâche")],
@@ -276,11 +266,7 @@ def test_pause_execution_is_owner_scoped_and_idempotent(tmp_path):
         assert paused.status_code == repeated.status_code == 200
         assert paused.json()["status"] == repeated.json()["status"] == "paused"
 
-        owner.post("/api/auth/logout")
-        owner.post("/api/auth/register", json={
-            "name": "Other user", "email": "other@example.com", "password": "a sufficiently long other password",
-        })
-        assert owner.post(f"/api/executions/{execution.id}/pause").status_code == 404
+        assert owner.post(f"/api/executions/{execution.id}/pause").status_code == 200
 
 
 def test_execution_stream_replays_events_and_artifacts_are_downloadable(tmp_path):
@@ -289,7 +275,7 @@ def test_execution_stream_replays_events_and_artifacts_are_downloadable(tmp_path
 
     with make_client(tmp_path) as client:
         conversation = client.post("/api/conversations", json={}).json()
-        owner_id = client.get("/api/auth/me").json()["id"]
+        owner_id = client.app.state.database.get_local_workspace_user().id
         repository = ExecutionRepository(client.app.state.database)
         execution = repository.create(
             owner_id,
@@ -313,9 +299,6 @@ def test_execution_stream_replays_events_and_artifacts_are_downloadable(tmp_path
         artifact = client.get(f"/api/executions/{execution.id}/artifacts/{artifact_id}")
         foreign = client.get(f"/api/executions/{execution.id}/artifacts/not-an-artifact")
         with TestClient(main.create_app(Settings(database_path=tmp_path / "test.sqlite3"))) as other:
-            other.post("/api/auth/register", json={
-                "name": "Other user", "email": "other@example.com", "password": "another sufficiently long password",
-            })
             foreign_stream = other.get(f"/api/executions/{execution.id}/stream")
             foreign_artifact = other.get(f"/api/executions/{execution.id}/artifacts/{artifact_id}")
 
@@ -330,8 +313,8 @@ def test_execution_stream_replays_events_and_artifacts_are_downloadable(tmp_path
     assert artifact.status_code == 200
     assert artifact.json()["content"] == "Rapport final"
     assert foreign.status_code == 404
-    assert foreign_stream.status_code == 404
-    assert foreign_artifact.status_code == 404
+    assert foreign_stream.status_code == 200
+    assert foreign_artifact.status_code == 200
 
 
 def test_cancelled_execution_reconnects_from_last_event_id_without_replaying_cursor(tmp_path):
@@ -340,7 +323,7 @@ def test_cancelled_execution_reconnects_from_last_event_id_without_replaying_cur
 
     with make_client(tmp_path) as client:
         conversation = client.post("/api/conversations", json={}).json()
-        owner_id = client.get("/api/auth/me").json()["id"]
+        owner_id = client.app.state.database.get_local_workspace_user().id
         repository = ExecutionRepository(client.app.state.database)
         execution = repository.create(
             owner_id,
@@ -370,14 +353,13 @@ def test_cancelled_execution_reconnects_from_last_event_id_without_replaying_cur
     assert "event: execution.terminal" in stream.text
 
 
-def test_analytics_are_calculated_from_owner_scoped_records(tmp_path):
+def test_analytics_are_calculated_from_local_workspace_records(tmp_path):
     from fastapi.testclient import TestClient
     from app.executions.repository import ExecutionRepository
     from app.planning.schemas import ExecutionPlan, PlannedTask
     database_path = tmp_path / "analytics.sqlite3"
     with TestClient(main.create_app(Settings(database_path=database_path, openai_api_key="", openai_model=""))) as first:
-        first.post("/api/auth/register", json={"name": "A", "email": "a@example.com", "password": "account a test password"})
-        owner_id = first.get("/api/auth/me").json()["id"]
+        owner_id = first.app.state.database.get_local_workspace_user().id
         conversation = first.post("/api/conversations", json={}).json()
         execution = ExecutionRepository(first.app.state.database).create(owner_id, conversation["id"], ExecutionPlan(summary="Test", tasks=[PlannedTask(id="a", title="One"), PlannedTask(id="b", title="Two")]))
         ExecutionRepository(first.app.state.database).complete_task(owner_id, execution.id, "a", "done")
@@ -388,11 +370,10 @@ def test_analytics_are_calculated_from_owner_scoped_records(tmp_path):
         assert metrics["completed_tasks"] == 1
         assert metrics["task_completion_percent"] == 50
     with TestClient(main.create_app(Settings(database_path=database_path, openai_api_key="", openai_model=""))) as second:
-        second.post("/api/auth/register", json={"name": "B", "email": "b@example.com", "password": "account b test password"})
-        assert second.get("/api/analytics").json()["executions"] == 0
+        assert second.get("/api/analytics").json()["executions"] == 1
 
 
-def test_analytics_execution_activity_is_daily_bounded_and_owner_scoped(tmp_path):
+def test_analytics_execution_activity_is_daily_bounded_for_local_workspace(tmp_path):
     from datetime import datetime, timedelta, timezone
 
     from app.executions.repository import ExecutionRepository
@@ -403,8 +384,7 @@ def test_analytics_execution_activity_is_daily_bounded_and_owner_scoped(tmp_path
     start_date = today - timedelta(days=13)
 
     with TestClient(main.create_app(Settings(database_path=database_path, openai_api_key="", openai_model=""))) as first:
-        first.post("/api/auth/register", json={"name": "A", "email": "a@example.com", "password": "account a test password"})
-        owner_id = first.get("/api/auth/me").json()["id"]
+        owner_id = first.app.state.database.get_local_workspace_user().id
         database = first.app.state.database
         repository = ExecutionRepository(database)
         conversation = first.post("/api/conversations", json={}).json()
@@ -415,8 +395,7 @@ def test_analytics_execution_activity_is_daily_bounded_and_owner_scoped(tmp_path
             connection.execute("UPDATE executions SET created_at = ? WHERE id = ?", ((today - timedelta(days=20)).isoformat() + "T12:00:00+00:00", old.id))
 
         with TestClient(main.create_app(Settings(database_path=database_path, openai_api_key="", openai_model=""))) as second:
-            second.post("/api/auth/register", json={"name": "B", "email": "b@example.com", "password": "account b test password"})
-            other_id = second.get("/api/auth/me").json()["id"]
+            other_id = second.app.state.database.get_local_workspace_user().id
             other_conversation = second.post("/api/conversations", json={}).json()
             other_execution = ExecutionRepository(second.app.state.database).create(
                 other_id, other_conversation["id"], ExecutionPlan(summary="Other", tasks=[PlannedTask(id="c", title="C")]),
@@ -430,6 +409,6 @@ def test_analytics_execution_activity_is_daily_bounded_and_owner_scoped(tmp_path
     assert len(activity) == 14
     assert activity[0]["date"] == start_date.isoformat()
     assert activity[-1]["date"] == today.isoformat()
-    assert sum(point["count"] for point in activity) == 1
+    assert sum(point["count"] for point in activity) == 2
     assert activity[-2]["count"] == 1
-    assert activity[-3]["count"] == 0
+    assert activity[-3]["count"] == 1

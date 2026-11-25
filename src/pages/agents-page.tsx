@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Bot, CheckCircle2, CircleAlert, LoaderCircle, Plus, Radio } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
+import { useNavigate } from 'react-router'
+import { Badge } from '@/components/reui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { IconTile } from '@/components/reui/icon-tile'
 import { AgentProfileCard } from '@/features/agents/agent-profile-card'
 import { AgentProfileForm } from '@/features/agents/agent-profile-form'
-import { SkillMarketplace } from '@/features/agents/skill-marketplace'
-import { updateProfileSkills } from '@/features/agents/agent-profile-utils'
 import { agentService } from '@/services/agent-service'
 import { chatAdapter } from '@/services/chat-adapters'
 import type { AgentCatalog, AgentProfile, AgentProfileInput } from '@/types/agent'
@@ -14,12 +14,13 @@ import type { AgentCatalog, AgentProfile, AgentProfileInput } from '@/types/agen
 type AgentConnection = 'checking' | 'ready' | 'missing' | 'offline' | 'demo'
 
 export function AgentsPage() {
+  const navigate = useNavigate()
   const [connection, setConnection] = useState<AgentConnection>(chatAdapter.mode === 'demo' ? 'demo' : 'checking')
   const [catalog, setCatalog] = useState<AgentCatalog | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [editor, setEditor] = useState<AgentProfile | 'new' | null>(null)
+  const [creating, setCreating] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -35,41 +36,29 @@ export function AgentsPage() {
     }).catch((cause: unknown) => {
       if (active) setError(cause instanceof Error ? cause.message : 'Impossible de charger les profils.')
     }).finally(() => { if (active) setLoading(false) })
-    if (chatAdapter.mode === 'demo') return
+    if (chatAdapter.mode === 'demo') return () => { active = false }
     void chatAdapter.checkHealth().then((result) => {
       if (active) setConnection(result.openai_configured ? 'ready' : 'missing')
     }).catch(() => { if (active) setConnection('offline') })
     return () => { active = false }
   }, [])
 
-  const status = {
-    checking: { label: 'Vérification…', icon: LoaderCircle, style: 'border-border bg-muted text-muted-foreground' },
-    ready: { label: 'Disponible', icon: CheckCircle2, style: 'border-emerald-500/20 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300' },
-    missing: { label: 'Configuration requise', icon: CircleAlert, style: 'border-amber-500/20 bg-amber-500/8 text-amber-700 dark:text-amber-300' },
-    offline: { label: 'Backend inaccessible', icon: CircleAlert, style: 'border-destructive/20 bg-destructive/5 text-destructive' },
-    demo: { label: 'Mode démo', icon: Radio, style: 'border-amber-500/20 bg-amber-500/8 text-amber-700 dark:text-amber-300' },
-  }[connection]
+  const status = ({
+    checking: { label: 'Vérification…', icon: LoaderCircle, variant: 'secondary' },
+    ready: { label: 'Disponible', icon: CheckCircle2, variant: 'success-light' },
+    missing: { label: 'Configuration requise', icon: CircleAlert, variant: 'warning-light' },
+    offline: { label: 'Backend inaccessible', icon: CircleAlert, variant: 'destructive-light' },
+    demo: { label: 'Mode démo', icon: Radio, variant: 'warning-light' },
+  } as const)[connection]
   const StatusIcon = status.icon
 
-  async function save(input: AgentProfileInput) {
+  async function create(input: AgentProfileInput) {
     setSaving(true)
     try {
-      if (editor === 'new') await agentService.create(input)
-      else if (editor) await agentService.update(editor.id, input)
-      setEditor(null)
-      await refresh()
+      const profile = await agentService.create(input)
+      setCreating(false)
+      navigate(`/agents/${encodeURIComponent(profile.id)}`)
     } finally { setSaving(false) }
-  }
-
-  function updateEditorSkills(skills: AgentProfile['skills'], skillIds: string[]) {
-    if (!editor || editor === 'new') return
-    const profileId = editor.id
-    setEditor((current) => current && current !== 'new' && current.id === profileId
-      ? { ...current, skills, skill_ids: skillIds }
-      : current)
-    setCatalog((current) => current
-      ? { ...current, profiles: updateProfileSkills(current.profiles, profileId, skills, skillIds) }
-      : current)
   }
 
   async function toggle(profile: AgentProfile) {
@@ -87,16 +76,18 @@ export function AgentsPage() {
     finally { setSaving(false) }
   }
 
-  return <div className="max-w-4xl space-y-6">
-    <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm text-muted-foreground">Spécialistes personnels</p><h2 className="mt-1 font-heading text-2xl font-semibold tracking-tight">Agents</h2><p className="mt-1 max-w-2xl text-sm text-muted-foreground">Le chat crée un agent spécialisé adapté depuis un modèle vérifié. Chaque modèle fournit des compétences de départ que vous pouvez modifier ici.</p></div><Button onClick={() => setEditor('new')} disabled={!!editor}><Plus />Créer un agent</Button></header>
-    <Card><CardContent className="flex gap-4 p-4"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><Bot aria-hidden="true" className="size-5" /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-medium">Assistant conversationnel</h3><Badge variant="outline" className={status.style}><StatusIcon aria-hidden="true" className={`mr-1.5 size-3.5 ${connection === 'checking' ? 'animate-spin' : ''}`} />{status.label}</Badge></div><p className="mt-1 text-sm text-muted-foreground">Répond aux demandes et conserve l’historique des conversations.</p>{connection === 'missing' && <p className="mt-3 text-xs text-muted-foreground">Renseignez <code>OPENAI_API_KEY</code> et <code>OPENAI_MODEL</code> dans <code>backend/.env</code>.</p>}{connection === 'offline' && <p role="alert" className="mt-3 text-xs text-destructive">Le backend ne répond pas. Lancez <code>npm run dev:all</code>.</p>}{connection === 'demo' && <p className="mt-3 text-xs text-muted-foreground">Les réponses du chat sont simulées dans ce mode.</p>}</div></CardContent></Card>
-    {editor && <Card><CardContent className="space-y-4 p-5"><div><h3 className="font-semibold">{editor === 'new' ? 'Créer un profil' : `Modifier ${editor.name}`}</h3><p className="text-sm text-muted-foreground">Les profils définissent le rôle et les compétences. Les permissions de connecteurs se règlent séparément.</p></div><AgentProfileForm key={editor === 'new' ? 'new' : editor.id} capabilities={catalog?.capabilities ?? []} profile={editor === 'new' ? undefined : editor} saving={saving} onSave={save} onCancel={() => setEditor(null)} onProfileSkillsChange={updateEditorSkills} /></CardContent></Card>}
-    <section aria-labelledby="specialists-heading" className="space-y-3"><div className="flex items-center justify-between"><h3 id="specialists-heading" className="text-sm font-semibold">Agents spécialisés</h3>{catalog && <span className="text-xs text-muted-foreground">{catalog.profiles.length} profil{catalog.profiles.length === 1 ? '' : 's'}</span>}</div>
+  return <div className="mx-auto max-w-5xl space-y-6 pb-10">
+    <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm text-muted-foreground">Votre équipe d’agents</p><h1 className="mt-1 font-heading text-2xl font-semibold tracking-tight">Agents</h1><p className="mt-1 max-w-2xl text-sm text-muted-foreground">Créez des spécialistes que l’orchestrateur pourra réutiliser selon leur rôle et leurs skills. Chaque agent se configure depuis sa fiche.</p></div><Button onClick={() => setCreating((current) => !current)} disabled={saving}><Plus />{creating ? 'Fermer' : 'Créer un agent'}</Button></header>
+
+    <Card><CardContent className="flex items-center gap-4 p-4"><IconTile variant="soft" className="shrink-0 text-primary" aria-hidden="true"><Bot /></IconTile><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h2 className="font-medium">Assistant conversationnel</h2><Badge variant={status.variant}><StatusIcon aria-hidden="true" className={`mr-1.5 size-3.5 ${connection === 'checking' ? 'animate-spin' : ''}`} />{status.label}</Badge></div><p className="mt-1 text-sm text-muted-foreground">Analyse les demandes, choisit les spécialistes utiles et garde l’historique de vos conversations.</p>{connection === 'missing' && <p className="mt-2 text-xs text-muted-foreground">Renseignez <code>OPENAI_API_KEY</code> et <code>OPENAI_MODEL</code> dans <code>backend/.env</code>.</p>}{connection === 'offline' && <p role="alert" className="mt-2 text-xs text-destructive">Le backend ne répond pas. Lancez <code>npm run dev:all</code>.</p>}{connection === 'demo' && <p className="mt-2 text-xs text-muted-foreground">Les réponses du chat sont simulées dans ce mode.</p>}</div></CardContent></Card>
+
+    {creating && <Card><CardContent className="space-y-4 p-5"><div><h2 className="font-semibold">Créer un agent</h2><p className="mt-1 text-sm text-muted-foreground">Définissez son nom, son rôle et les consignes générales. Ajoutez ensuite des skills et outils depuis sa fiche.</p></div><AgentProfileForm saving={saving} onSave={create} onCancel={() => setCreating(false)} /></CardContent></Card>}
+
+    <section aria-labelledby="specialists-heading" className="space-y-3"><div className="flex items-center justify-between"><h2 id="specialists-heading" className="text-sm font-semibold">Agents spécialisés</h2>{catalog && <span className="text-xs text-muted-foreground">{catalog.profiles.length} profil{catalog.profiles.length === 1 ? '' : 's'}</span>}</div>
       {loading && <div role="status" className="flex items-center gap-2 py-8 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Chargement des agents…</div>}
       {!loading && error && <div role="alert" className="rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">{error}<Button className="ml-3" size="sm" variant="outline" onClick={() => void refresh()}>Réessayer</Button></div>}
-      {!loading && !error && catalog?.profiles.length === 0 && <div className="rounded-xl border border-dashed p-8 text-center"><Bot className="mx-auto size-7 text-muted-foreground" /><p className="mt-3 font-medium">Aucun spécialiste pour le moment</p><p className="mt-1 text-sm text-muted-foreground">Un agent adapté sera créé automatiquement quand une demande complexe le nécessitera.</p></div>}
-      {!loading && catalog?.profiles.map((profile) => <AgentProfileCard key={profile.id} profile={profile} capabilities={catalog.capabilities} onEdit={setEditor} onToggle={(item) => void toggle(item)} onDelete={(item) => void remove(item)} />)}
+      {!loading && !error && catalog?.profiles.length === 0 && <div className="rounded-xl border border-dashed p-8 text-center"><IconTile variant="soft" className="mx-auto text-muted-foreground" aria-hidden="true"><Bot /></IconTile><p className="mt-3 font-medium">Aucun agent spécialisé pour le moment</p><p className="mt-1 text-sm text-muted-foreground">L’orchestrateur peut en créer un automatiquement lorsqu’une demande complexe le nécessite.</p></div>}
+      {!loading && catalog?.profiles.map((profile) => <AgentProfileCard key={profile.id} profile={profile} disabled={saving} onToggle={(item) => void toggle(item)} onDelete={(item) => void remove(item)} />)}
     </section>
-    <SkillMarketplace />
   </div>
 }

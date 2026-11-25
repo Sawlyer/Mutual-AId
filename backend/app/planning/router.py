@@ -41,12 +41,8 @@ class RequestRouter:
                 profile = profiles_by_id.get(task.agent_profile_id)
                 if profile is None:
                     raise PlanValidationError("unknown or disabled agent profile")
-                if task.capability_ids and not set(task.capability_ids).intersection(profile.capability_ids):
-                    raise PlanValidationError("agent does not provide required capability")
-                labels = [capability_labels[item] for item in task.capability_ids if item in capability_labels]
                 reason = (
-                    f"Profil réutilisé : {profile.name} couvre {', '.join(labels)}."
-                    if labels else f"Profil réutilisé : {profile.name} est actif et autorisé."
+                    f"Profil réutilisé : {profile.name} correspond aux compétences et à la description de la tâche."
                 )
                 task = task.model_copy(update={"agent_assignment_reason": reason})
             elif task.capability_ids:

@@ -10,7 +10,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
-from app.auth import create_session, hash_password, token_digest, verify_password
 
 from app.agent import McpActivity, configure_openai, stream_assistant
 from app.mcp_assistant import install_mcp_assistant_instructions
@@ -25,6 +24,7 @@ from app.executions.repository import ExecutionRepository
 from app.planning.router import RequestRouter
 from app.planning.schemas import PlanningRequest, PlanValidationError
 from app.planning.service import PlanningAuthenticationError, Planner, PlanningUnavailable
+from app.usage import record_model_run_usage
 from app.connectors.registry import ConnectorRegistry
 from app.connectors.base import Connector, ConnectorPermission, ToolAccess, ToolDescriptor, UnavailableAuthProvider
 from app.connectors.tools import ConnectorAuthorizationError, ToolRegistry
@@ -54,10 +54,7 @@ from app.schemas import (
     ConversationCreate,
     ConversationRead,
     ConversationRename,
-    AuthLogin,
-    AuthAccountDelete,
-    AuthRegister,
-    AuthUserRead,
+    WorkspaceIdentity,
     AgentCatalogRead,
     ApprovalDecision,
     AnalyticsRead,
@@ -173,15 +170,12 @@ Db = Annotated[Database, Depends(get_database)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 
 
-def current_user(request: Request, database: Db, settings: AppSettings) -> AuthUserRead:
-    token = request.cookies.get(settings.auth_cookie_name)
-    user = database.get_user_for_session(token_digest(token)) if token else None
-    if user is None:
-        raise HTTPException(status_code=401, detail="Connectez-vous pour continuer.")
-    return user
+def current_user(database: Db) -> WorkspaceIdentity:
+    """Return the single local workspace identity used by this installation."""
+    return database.get_local_workspace_user()
 
 
-CurrentUser = Annotated[AuthUserRead, Depends(current_user)]
+CurrentUser = Annotated[WorkspaceIdentity, Depends(current_user)]
 
 
 def agent_service(database: Db) -> AgentService:
@@ -197,103 +191,6 @@ def trusted_origin(request: Request, settings: AppSettings) -> None:
 TrustedOrigin = Depends(trusted_origin)
 
 
-def set_session_cookie(response: Response, token: str, settings: Settings) -> None:
-    response.set_cookie(
-        settings.auth_cookie_name,
-        token,
-        max_age=settings.auth_session_days * 86400,
-        httponly=True,
-        secure=settings.auth_cookie_secure,
-        samesite="lax",
-        path="/",
-    )
-
-@router.post("/auth/register", response_model=AuthUserRead, status_code=201, dependencies=[Depends(rate_limit), TrustedOrigin])
-async def register(payload: AuthRegister, response: Response, database: Db, settings: AppSettings) -> AuthUserRead:
-    if database.get_user_by_email(payload.email):
-        raise HTTPException(status_code=409, detail="Un compte utilise déjà cette adresse e-mail.")
-    try:
-        user = database.create_user(payload.email, payload.name, hash_password(payload.password))
-    except Exception as error:
-        if database.get_user_by_email(payload.email):
-            raise HTTPException(status_code=409, detail="Un compte utilise déjà cette adresse e-mail.") from error
-        raise
-    set_session_cookie(response, create_session(database, user, settings), settings)
-    return user
-
-
-@router.post("/auth/login", response_model=AuthUserRead, dependencies=[Depends(rate_limit), TrustedOrigin])
-async def login(payload: AuthLogin, response: Response, database: Db, settings: AppSettings) -> AuthUserRead:
-    account = database.get_user_by_email(payload.email)
-    if not verify_password(payload.password, account["password_hash"] if account else None) or account is None:
-        raise HTTPException(status_code=401, detail="Adresse e-mail ou mot de passe incorrect.")
-    user = database.get_user(account["id"])
-    assert user is not None
-    set_session_cookie(response, create_session(database, user, settings), settings)
-    return user
-
-
-@router.get("/auth/me", response_model=AuthUserRead)
-async def auth_me(user: CurrentUser) -> AuthUserRead:
-    return user
-
-
-@router.post("/auth/logout", status_code=204, dependencies=[Depends(rate_limit), TrustedOrigin])
-async def logout(request: Request, response: Response, database: Db, settings: AppSettings, user: CurrentUser) -> Response:
-    token = request.cookies.get(settings.auth_cookie_name)
-    if token:
-        database.delete_auth_session(token_digest(token))
-    response.delete_cookie(settings.auth_cookie_name, path="/api", httponly=True, secure=settings.auth_cookie_secure, samesite="lax")
-    response.status_code = 204
-    return response
-
-
-@router.delete("/auth/account", status_code=204, dependencies=[Depends(rate_limit), TrustedOrigin],
-               summary="Supprimer le compte et ses données")
-async def delete_account(
-    payload: AuthAccountDelete,
-    request: Request,
-    response: Response,
-    database: Db,
-    settings: AppSettings,
-    user: CurrentUser,
-) -> Response:
-    account = database.get_user_by_email(user.email)
-    if account is None or not verify_password(payload.password, account["password_hash"]):
-        raise HTTPException(status_code=401, detail="Mot de passe incorrect.")
-
-    # Revoke provider grants before deleting their encrypted credentials. The database
-    # performs the active-execution check again atomically before removing the account.
-    if database.user_has_active_executions(user.id):
-        raise HTTPException(status_code=409, detail="Terminez ou mettez en pause les exécutions avant de supprimer le compte.")
-
-    github_oauth: GitHubAppOAuthClient | None = request.app.state.github_oauth
-    if github_oauth and database.get_connector_credentials(user.id, "github"):
-        try:
-            await github_oauth.revoke(user.id)
-        except Exception as error:
-            logger.warning("GitHub grant revocation failed during account deletion for user %s (%s)", user.id, type(error).__name__)
-
-    google_oauth: GoogleOAuthClient | None = request.app.state.google_oauth
-    if google_oauth:
-        for connector_id in GOOGLE_CONNECTOR_SCOPES:
-            if database.get_connector_credentials(user.id, connector_id):
-                try:
-                    await google_oauth.revoke(user.id, connector_id)
-                except Exception as error:
-                    logger.warning("Google grant revocation failed during account deletion for user %s (%s)", user.id, type(error).__name__)
-
-    result = database.delete_user_account(user.id)
-    if result == "active_executions":
-        raise HTTPException(status_code=409, detail="Une exécution a démarré. Réessayez après sa fin.")
-    if result == "not_found":
-        raise HTTPException(status_code=404, detail="Compte introuvable.")
-
-    response.delete_cookie(settings.auth_cookie_name, path="/api", httponly=True, secure=settings.auth_cookie_secure, samesite="lax")
-    response.status_code = 204
-    return response
-
-
 @router.get("/health", response_model=HealthRead, summary="Vérifier la disponibilité du backend")
 async def health(settings: AppSettings) -> HealthRead:
     return HealthRead(
@@ -302,7 +199,7 @@ async def health(settings: AppSettings) -> HealthRead:
     )
 
 
-@router.get("/analytics", response_model=AnalyticsRead, summary="Lire les statistiques du compte")
+@router.get("/analytics", response_model=AnalyticsRead, summary="Lire les statistiques de l’espace de travail")
 async def get_analytics(database: Db, user: CurrentUser) -> AnalyticsRead:
     return AnalyticsRead(**database.get_user_analytics(user.id))
 
@@ -339,7 +236,7 @@ async def update_agent(profile_id: str, payload: AgentProfileUpdate, service: An
     try:
         profile = service.update_profile(user.id, profile_id, payload)
     except InvalidSkillAssignment as error:
-        raise HTTPException(status_code=422, detail="Une compétence de l’agent n’appartient pas à ce compte.") from error
+        raise HTTPException(status_code=422, detail="Une compétence de l’agent n’appartient pas à cet espace.") from error
     if profile is None:
         raise HTTPException(status_code=404, detail="Profil introuvable.")
     return profile
@@ -522,7 +419,7 @@ async def get_execution(execution_id: str, request: Request, user: CurrentUser):
     return execution
 
 
-@router.get("/executions", summary="Lister les exécutions de l’utilisateur")
+@router.get("/executions", summary="Lister les exécutions de l’espace de travail")
 async def list_executions(request: Request, user: CurrentUser):
     return request.app.state.execution_repository.list_executions(user.id)
 
@@ -868,6 +765,9 @@ async def send_message_stream(
                 ) as mcp_servers:
                     async for chunk in stream_assistant(
                         conversation_id, prompt, settings, available_tools, tool_context, mcp_servers,
+                        on_usage=lambda result: record_model_run_usage(
+                            database, settings, conversation_id, "assistant", result,
+                        ),
                     ):
                         if await request.is_disconnected():
                             raise asyncio.CancelledError
@@ -971,7 +871,7 @@ async def list_connectors(request: Request, database: Db, user: CurrentUser) -> 
     return catalog
 
 
-@router.get("/connectors/mcp", response_model=list[McpServerRead], summary="Lister les serveurs MCP de l’utilisateur")
+@router.get("/connectors/mcp", response_model=list[McpServerRead], summary="Lister les serveurs MCP de l’espace de travail")
 async def list_mcp_servers(request: Request, database: Db, settings: AppSettings, user: CurrentUser) -> list[McpServerRead]:
     return [
         server for server in McpService(database, settings).list_servers(user.id)
@@ -1121,17 +1021,8 @@ async def connect_google_connector(connector_id: str, request: Request, user: Cu
 @router.get("/connectors/google/callback", summary="Terminer OAuth Google")
 @router.get("/connectors/google_calendar/callback", include_in_schema=False)
 async def google_calendar_callback(request: Request, database: Db, settings: AppSettings) -> RedirectResponse:
-    token = request.cookies.get(settings.auth_cookie_name)
-    user = database.get_user_for_session(token_digest(token)) if token else None
-    print("OAuth callback session check: cookie_name=%s, cookie_present=%s, user_found=%s",
-        settings.auth_cookie_name,
-        bool(token),
-        user is not None,)
-
+    user = database.get_local_workspace_user()
     origin = settings.allowed_origins[0].rstrip("/")
-    if user is None:
-        return RedirectResponse(f"{origin}/connectors?oauth_error=session", status_code=303,
-                                headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
     oauth: GoogleOAuthClient | None = request.app.state.google_oauth
     if oauth is None:
         return RedirectResponse(f"{origin}/connectors?oauth_error=unavailable", status_code=303,
@@ -1154,12 +1045,9 @@ async def google_calendar_callback(request: Request, database: Db, settings: App
 
 @router.get("/connectors/github/callback", summary="Terminer OAuth GitHub")
 async def github_callback(request: Request, database: Db, settings: AppSettings) -> RedirectResponse:
-    token = request.cookies.get(settings.auth_cookie_name)
-    user = database.get_user_for_session(token_digest(token)) if token else None
+    user = database.get_local_workspace_user()
     origin = settings.allowed_origins[0].rstrip("/")
     headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
-    if user is None:
-        return RedirectResponse(f"{origin}/connectors?oauth_error=session", status_code=303, headers=headers)
     oauth: GitHubAppOAuthClient | None = request.app.state.github_oauth
     if oauth is None:
         return RedirectResponse(f"{origin}/connectors?oauth_error=unavailable", status_code=303, headers=headers)
@@ -1401,9 +1289,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.execution_coordinator = ExecutionCoordinator(
         application.state.execution_repository, profiles, app_settings, database,
         application.state.tool_registry, google_oauth, github_oauth, application.state.mcp_runtime,
-        ExecutionResultReviewer(app_settings),
+        ExecutionResultReviewer(app_settings, database),
     )
-    application.state.request_router = RequestRouter(Planner(app_settings), profiles)
+    application.state.request_router = RequestRouter(Planner(app_settings, database), profiles)
     application.state.rate_limiter = RequestLimiter(app_settings.requests_per_minute)
     application.state.conversation_locks = defaultdict(asyncio.Lock)
     application.add_middleware(

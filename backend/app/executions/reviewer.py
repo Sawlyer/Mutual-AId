@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.config import Settings
 from app.executions.models import ExecutionRead
 from app.model_settings import model_settings_for
+from app.db import Database
+from app.usage import record_model_run_usage
 
 MAX_REVIEW_TASKS = 10
 MAX_REVIEW_RESULT_CHARS = 1_200
@@ -22,8 +24,9 @@ class ExecutionResultReview(BaseModel):
 class ExecutionResultReviewer:
     """Independently check completed outputs against their task contracts."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, database: Database | None = None):
         self.settings = settings
+        self.database = database
 
     async def review(self, execution: ExecutionRead) -> ExecutionResultReview:
         if not self.settings.openai_configured or not self.settings.openai_model:
@@ -75,6 +78,10 @@ class ExecutionResultReviewer:
             max_turns=1,
             run_config=RunConfig(tracing_disabled=True),
         )
+        if self.database is not None:
+            record_model_run_usage(
+                self.database, self.settings, execution.conversation_id, "review", result,
+            )
         output = result.final_output
         if isinstance(output, ExecutionResultReview):
             return output

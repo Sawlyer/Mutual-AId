@@ -1,27 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { getEnabledSkillNames, updateProfileSkills } from './agent-profile-utils'
+import { agentDomainFromName } from '@/features/agents/agent-profile-utils'
 
-describe('updateProfileSkills', () => {
-  it('updates the selected profile without mutating the other profiles', () => {
-    const profiles = [
-      { id: 'agent-a', skill_ids: [], skills: [] },
-      { id: 'agent-b', skill_ids: [], skills: [] },
-    ]
-    const skills = [{ id: 'skill-1', name: 'Verify' }]
+describe('agentDomainFromName', () => {
+  it('creates_a_valid_domain_from_a_name', () => {
+    const domain = agentDomainFromName('42 — Conseiller santé & Bien-être ' + 'avec un nom très long '.repeat(8))
 
-    const result = updateProfileSkills(profiles, 'agent-a', skills, ['skill-1'])
-
-    expect(result[0]).toEqual({ id: 'agent-a', skill_ids: ['skill-1'], skills })
-    expect(result[1]).toBe(profiles[1])
-    expect(profiles[0].skill_ids).toEqual([])
+    expect(domain).toMatch(/^[a-z][a-z0-9_-]{0,63}$/)
+    expect(domain.startsWith('agent-42-conseiller-sante-bien-etre')).toBe(true)
+    expect(domain).toHaveLength(64)
   })
-})
 
-describe('getEnabledSkillNames', () => {
-  it('summarizes enabled skills and omits disabled ones', () => {
-    expect(getEnabledSkillNames([
-      { name: 'Organisation santé', enabled: true },
-      { name: 'Ancienne consigne', enabled: false },
-    ])).toEqual(['Organisation santé'])
+  it('falls_back_when_name_has_no_ascii_letters', () => {
+    expect(agentDomainFromName('🤖 123 !!!')).toBe('agent')
   })
 })
