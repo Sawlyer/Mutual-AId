@@ -24,7 +24,6 @@ from app.connectors.mcp_models import (
     validate_public_endpoint,
 )
 from app.connectors.mcp_service import McpService
-from app.connectors.limits import MAX_CONVERSATION_CONNECTORS
 from app.connectors.oauth import TokenVault
 from app.db import Database
 
@@ -34,6 +33,8 @@ _BEARER = re.compile(r"(?i)\bBearer\s+\S+")
 _AUTHORIZATION = re.compile(r"(?i)(authorization\s*[:=]\s*)\S+")
 _AUTH_TOKEN = re.compile(r"(?i)(auth_token[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+")
 MCP_CONNECTOR_PREFIX = "mcp:"
+
+
 class SecretRedactionFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         rendered = _redact(record.getMessage())
@@ -424,8 +425,6 @@ class McpRuntime:
         server = await self._refresh_conversation_tools(user_id, server_id)
         connector_id = f"{MCP_CONNECTOR_PREFIX}{server_id}"
         current = self.database.get_conversation_connector_ids(user_id, conversation_id)
-        if connector_id not in current and len(current) >= MAX_CONVERSATION_CONNECTORS:
-            raise ConversationMcpError(409, "Cette conversation a déjà le nombre maximal de connecteurs.")
         if connector_id not in current:
             current = [*current, connector_id]
             self.database.set_conversation_connector_ids(user_id, conversation_id, current)

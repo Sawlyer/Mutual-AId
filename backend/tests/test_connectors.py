@@ -511,6 +511,53 @@ def test_conversation_activation_selects_the_server_without_leaving_the_account(
     assert seen["servers"]
 
 
+def test_conversation_accepts_a_sixth_connector(tmp_path, monkeypatch):
+    catalog_path = tmp_path / "sixth-catalog.sqlite3"
+    listing = {entry["id"]: entry for entry in parse_listing_html(LISTING_HTML)}
+    published = qualify_listing_entry(listing["docs-search"], HOSTED_PUBLIC)
+    write_catalog(catalog_path, [published])
+    settings = Settings(
+        database_path=tmp_path / "sixth-connector.sqlite3", openai_api_key="test-key", openai_model="test-model",
+        connector_token_encryption_key=Fernet.generate_key().decode(), mcp_catalog_path=catalog_path,
+    )
+
+    async def fake_discover(self, row):
+        return [SimpleNamespace(name="snapshot", description="Read", input_schema={"type": "object"}, annotations=None)]
+
+    monkeypatch.setattr(McpRuntime, "_discover_tools", fake_discover)
+    with TestClient(create_app(settings)) as client:
+        client.post("/api/auth/register", json={"name": "Chat", "email": "sixth@example.com", "password": "sixth connector password"})
+        database = client.app.state.database
+        user_id = database.get_local_workspace_user().id
+        conversation = client.post("/api/conversations", json={}).json()
+        selected = []
+        for index in range(5):
+            server_id = f"server-{index}"
+            database.create_mcp_server(server_id, user_id, f"Server {index}", f"https://8.8.8.{index}/mcp", None)
+            database.update_mcp_server_tools(user_id, server_id, [{"name": "read", "description": "Read", "access": "read"}])
+            database.set_mcp_server_approved_tools(user_id, server_id, ["read"])
+            database.set_mcp_server_enabled(user_id, server_id, True)
+            selected.append(f"mcp:{server_id}")
+        stored = client.put(
+            f"/api/conversations/{conversation['id']}/connectors",
+            json={"connector_ids": selected},
+        )
+        activated = client.post(f"/api/conversations/{conversation['id']}/mcp", json={"catalog_id": "docs-search"})
+        connector_ids = activated.json()["connector_ids"]
+        saved = client.put(
+            f"/api/conversations/{conversation['id']}/connectors",
+            json={"connector_ids": connector_ids},
+        )
+
+    assert stored.status_code == 200
+    assert stored.json()["connector_ids"] == selected
+    assert activated.status_code == 200
+    assert len(connector_ids) == 6
+    assert set(selected).issubset(connector_ids)
+    assert saved.status_code == 200
+    assert saved.json()["connector_ids"] == connector_ids
+
+
 def test_catalog_search_suggestions_and_activation_stay_local(tmp_path):
     catalog_path = tmp_path / "catalog.sqlite3"
     listing = {entry["id"]: entry for entry in parse_listing_html(LISTING_HTML)}

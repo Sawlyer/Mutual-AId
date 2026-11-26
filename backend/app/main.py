@@ -45,7 +45,7 @@ from app.connectors.mcp_models import (
 )
 from app.connectors.mcp_service import McpService
 from app.connectors.mcp_runtime import (
-    MAX_CONVERSATION_CONNECTORS, MCP_CONNECTOR_PREFIX, ConversationMcpError, McpAuthorizationError, McpRuntime,
+    MCP_CONNECTOR_PREFIX, ConversationMcpError, McpAuthorizationError, McpRuntime,
     install_secret_log_filter, refusal_detail,
 )
 from app.config import Settings
@@ -150,8 +150,6 @@ def _attach_ready_mcp_servers(
         connector_id = f"{MCP_CONNECTOR_PREFIX}{row['id']}"
         if connector_id in updated:
             continue
-        if len(updated) >= MAX_CONVERSATION_CONNECTORS:
-            break
         updated.append(connector_id)
     if updated != list(connector_ids):
         database.set_conversation_connector_ids(user_id, conversation_id, updated)
@@ -1170,7 +1168,6 @@ async def set_conversation_connectors(
     summary="Activer un serveur MCP suggéré pour cette conversation",
     responses={
         404: {"description": "Conversation ou fiche inconnue."},
-        409: {"description": "La conversation a déjà le nombre maximal de connecteurs."},
         422: {"description": "Jeton manquant ou aucun outil utilisable."},
         502: {"description": "Le serveur MCP n’a pas pu être inspecté."},
     },
