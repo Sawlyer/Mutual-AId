@@ -2,6 +2,8 @@ from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.connectors.limits import MAX_CONVERSATION_CONNECTORS
 from app.agents.models import AgentCapability, AgentProfileCreate, AgentProfileRead, AgentProfileUpdate
 
 
@@ -82,7 +84,7 @@ class ConversationRead(BaseModel):
 
 class MessageCreate(BaseModel):
     content: str = Field(default="", max_length=12_000)
-    connector_ids: list[str] = Field(default_factory=list, max_length=5)
+    connector_ids: list[str] = Field(default_factory=list, max_length=MAX_CONVERSATION_CONNECTORS)
     use_connected_tools: bool = False
     resume_with_tools: bool = False
     decline_mcp_suggestions: bool = False
@@ -133,7 +135,7 @@ class ConnectorRead(BaseModel):
 
 
 class ConnectorPreferencesUpdate(BaseModel):
-    connector_ids: list[str] = Field(default_factory=list, max_length=5)
+    connector_ids: list[str] = Field(default_factory=list, max_length=MAX_CONVERSATION_CONNECTORS)
 
     @field_validator("connector_ids")
     @classmethod

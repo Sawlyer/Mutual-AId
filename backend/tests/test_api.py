@@ -46,6 +46,21 @@ def test_unknown_conversation_returns_404(tmp_path):
     assert response.status_code == 404
 
 
+def test_connector_request_schemas_share_the_conversation_limit():
+    from app.connectors.limits import MAX_CONVERSATION_CONNECTORS
+    from app.planning.schemas import PlanningRequest
+    from app.schemas import ConnectorPreferencesUpdate, MessageCreate
+
+    connector_ids = [f"mcp:server-{index}" for index in range(MAX_CONVERSATION_CONNECTORS)]
+
+    assert len(ConnectorPreferencesUpdate(connector_ids=connector_ids).connector_ids) == MAX_CONVERSATION_CONNECTORS
+    assert len(MessageCreate(content="Lire mes données", connector_ids=connector_ids).connector_ids) == MAX_CONVERSATION_CONNECTORS
+    assert len(PlanningRequest(
+        user_id="local-user", conversation_id="conversation", message="Analyser mes données",
+        enabled_connector_ids=connector_ids,
+    ).enabled_connector_ids) == MAX_CONVERSATION_CONNECTORS
+
+
 def test_health_does_not_require_or_expose_an_api_key(tmp_path):
     with make_client(tmp_path) as client:
         health = client.get("/api/health").json()
