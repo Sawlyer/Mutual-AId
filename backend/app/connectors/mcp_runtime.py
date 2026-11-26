@@ -24,6 +24,7 @@ from app.connectors.mcp_models import (
     validate_public_endpoint,
 )
 from app.connectors.mcp_service import McpService
+from app.connectors.limits import MAX_CONVERSATION_CONNECTORS
 from app.connectors.oauth import TokenVault
 from app.db import Database
 
@@ -33,9 +34,6 @@ _BEARER = re.compile(r"(?i)\bBearer\s+\S+")
 _AUTHORIZATION = re.compile(r"(?i)(authorization\s*[:=]\s*)\S+")
 _AUTH_TOKEN = re.compile(r"(?i)(auth_token[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+")
 MCP_CONNECTOR_PREFIX = "mcp:"
-MAX_CONVERSATION_CONNECTORS = 5
-
-
 class SecretRedactionFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         rendered = _redact(record.getMessage())

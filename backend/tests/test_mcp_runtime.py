@@ -277,6 +277,30 @@ def test_conversation_activation_approves_non_destructive_tools(tmp_path):
     assert len(database.list_mcp_servers("user-a")) == 2
 
 
+def test_conversation_activation_can_exceed_five_total_connectors(tmp_path):
+    database, _, existing_server, runtime = make_runtime(tmp_path, [mcp_tool("search")])
+    conversation_id = database.create_conversation("Chat", owner_id="user-a").id
+    existing_ids = [
+        "gmail",
+        "google_drive",
+        "google_calendar",
+        "github",
+        f"mcp:{existing_server.id}",
+    ]
+    database.set_conversation_connector_ids("user-a", conversation_id, existing_ids)
+
+    _, connector_ids = asyncio.run(runtime.activate_catalog_for_conversation(
+        "user-a", conversation_id, catalog_id="second-mcp", name="Second MCP",
+        endpoint="https://8.8.4.4/mcp", requires_token=False, auth_token=None,
+    ))
+
+    assert len(connector_ids) == 6
+    assert set(existing_ids).issubset(connector_ids)
+    added_ids = set(connector_ids) - set(existing_ids)
+    assert len(added_ids) == 1
+    assert next(iter(added_ids)).startswith("mcp:")
+
+
 def test_mcp_runtime_filters_to_approved_read_tools_and_isolates_users(tmp_path):
     database, settings, created, runtime = make_runtime(tmp_path, [mcp_tool("search"), mcp_tool("delete", False)])
     asyncio.run(runtime.refresh_tools("user-a", str(created.id)))
