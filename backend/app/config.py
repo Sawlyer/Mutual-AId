@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     max_agent_turns: int = Field(default=5, ge=1, le=20)
     max_parallel_tasks: int = Field(default=3, ge=1, le=8)
     max_message_chars: int = Field(default=12_000, ge=100, le=50_000)
-    requests_per_minute: int = Field(default=12, ge=1, le=120)
+    requests_per_minute: int = Field(default=60, ge=1, le=120)
     google_oauth_client_id: str | None = None
     google_oauth_client_secret: SecretStr | None = None
     google_oauth_redirect_uri: str | None = None

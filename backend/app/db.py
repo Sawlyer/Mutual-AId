@@ -186,6 +186,7 @@ class Database:
                     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
                     origin TEXT NOT NULL CHECK (origin IN ('user_created', 'auto_created', 'system_template')),
                     template_version INTEGER NOT NULL DEFAULT 1,
+                    merged_into_id TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -347,6 +348,9 @@ class Database:
             if "status" not in event_columns:
                 connection.execute("ALTER TABLE execution_events ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
             agent_skill_columns = {row["name"] for row in connection.execute("PRAGMA table_info(agent_skills)")}
+            agent_profile_columns = {row["name"] for row in connection.execute("PRAGMA table_info(agent_profiles)")}
+            if "merged_into_id" not in agent_profile_columns:
+                connection.execute("ALTER TABLE agent_profiles ADD COLUMN merged_into_id TEXT")
             if "catalog_id" not in agent_skill_columns:
                 connection.execute("ALTER TABLE agent_skills ADD COLUMN catalog_id TEXT")
             if "source" not in agent_skill_columns:
@@ -461,6 +465,86 @@ class Database:
             )
             cursor = connection.execute("DELETE FROM agent_profiles WHERE user_id = ? AND id = ?", (user_id, profile_id))
         return cursor.rowcount > 0
+
+    def merge_agent_profiles(
+        self, user_id: str, target_profile_id: str, source_profile_id: str, include_mcp_tools: bool = False,
+    ) -> tuple[dict[str, object], dict[str, object]] | None:
+        if target_profile_id == source_profile_id:
+            raise ValueError("An agent cannot be merged into itself")
+        timestamp = utc_now()
+        with self.connection() as connection:
+            target = connection.execute(
+                "SELECT * FROM agent_profiles WHERE user_id = ? AND id = ?", (user_id, target_profile_id),
+            ).fetchone()
+            source = connection.execute(
+                "SELECT * FROM agent_profiles WHERE user_id = ? AND id = ?", (user_id, source_profile_id),
+            ).fetchone()
+            if target is None or source is None:
+                return None
+            if not bool(target["enabled"]) or not bool(source["enabled"]) or source["merged_into_id"]:
+                raise ValueError("Only active, unmerged profiles can be merged")
+            target_capabilities = set(json.loads(target["capability_ids_json"]))
+            source_capabilities = set(json.loads(source["capability_ids_json"]))
+            merged_capabilities = sorted(target_capabilities | source_capabilities)
+            connection.execute(
+                """INSERT OR IGNORE INTO agent_profile_skills (user_id, profile_id, skill_id, created_at)
+                   SELECT user_id, ?, skill_id, ? FROM agent_profile_skills
+                   WHERE user_id = ? AND profile_id = ?""",
+                (target_profile_id, timestamp, user_id, source_profile_id),
+            )
+            source_instructions = str(source["instructions"]).strip()
+            if source_instructions and source_instructions != str(target["instructions"]).strip():
+                context_skill_id = str(uuid4())
+                context_skill_name = f"Consignes de {source['name']}"[:80]
+                connection.execute(
+                    """INSERT INTO agent_skills
+                       (id, user_id, name, description, instructions, enabled, source, catalog_id, catalog_version,
+                        catalog_snapshot_json, review_status, generated_by, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, 1, 'user', NULL, NULL, NULL, 'approved', NULL, ?, ?)""",
+                    (context_skill_id, user_id, context_skill_name,
+                     f"Consignes générales transférées lors de la fusion de {source['name']}"[:300],
+                     source_instructions, timestamp, timestamp),
+                )
+                connection.execute(
+                    """INSERT INTO agent_profile_skills (user_id, profile_id, skill_id, created_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (user_id, target_profile_id, context_skill_id, timestamp),
+                )
+                connection.execute(
+                    """INSERT INTO agent_skill_audit (user_id, skill_id, profile_id, action, details_json, created_at)
+                       VALUES (?, ?, ?, 'merged_from_agent', ?, ?)""",
+                    (user_id, context_skill_id, target_profile_id,
+                     json.dumps({"source_profile_id": source_profile_id}), timestamp),
+                )
+            if include_mcp_tools:
+                connection.execute(
+                    """INSERT OR IGNORE INTO agent_profile_mcp_tools (user_id, profile_id, server_id, tool_name)
+                       SELECT user_id, ?, server_id, tool_name FROM agent_profile_mcp_tools
+                       WHERE user_id = ? AND profile_id = ?""",
+                    (target_profile_id, user_id, source_profile_id),
+                )
+            connection.execute(
+                "DELETE FROM auto_agent_capabilities WHERE user_id = ? AND profile_id = ?",
+                (user_id, source_profile_id),
+            )
+            connection.execute(
+                "UPDATE agent_profiles SET capability_ids_json = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (json.dumps(merged_capabilities), timestamp, user_id, target_profile_id),
+            )
+            connection.execute(
+                "UPDATE agent_profiles SET enabled = 0, merged_into_id = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (target_profile_id, timestamp, user_id, source_profile_id),
+            )
+            target_row = connection.execute(
+                "SELECT * FROM agent_profiles WHERE user_id = ? AND id = ?", (user_id, target_profile_id),
+            ).fetchone()
+            source_row = connection.execute(
+                "SELECT * FROM agent_profiles WHERE user_id = ? AND id = ?", (user_id, source_profile_id),
+            ).fetchone()
+        target_data = self._agent_profile(target_row)
+        source_data = self._agent_profile(source_row)
+        assert target_data is not None and source_data is not None
+        return source_data, target_data
 
     @staticmethod
     def _agent_skill(row: sqlite3.Row | None) -> dict[str, object] | None:
@@ -643,9 +727,15 @@ class Database:
                 skill_id = str(uuid4())
                 connection.execute(
                     """INSERT INTO agent_skills
-                       (id, user_id, name, description, instructions, enabled, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
-                    (skill_id, user_id, skill["name"], skill["description"], skill["instructions"], timestamp, timestamp),
+                       (id, user_id, name, description, instructions, enabled, source, catalog_id, catalog_version,
+                        catalog_snapshot_json, review_status, generated_by, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 'approved', NULL, ?, ?)""",
+                    (
+                        skill_id, user_id, skill["name"], skill["description"], skill["instructions"],
+                        skill.get("source", "user"), skill.get("catalog_id"), skill.get("catalog_version"),
+                        json.dumps(skill["catalog_snapshot"]) if skill.get("catalog_snapshot") else None,
+                        timestamp, timestamp,
+                    ),
                 )
                 connection.execute(
                     "INSERT INTO agent_profile_skills (user_id, profile_id, skill_id, created_at) VALUES (?, ?, ?, ?)",

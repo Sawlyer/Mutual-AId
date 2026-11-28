@@ -1211,6 +1211,80 @@ def test_calendar_read_returns_minimized_fields_and_checks_user_connection(tmp_p
         raise AssertionError("Calendar data must not be accessible to a different user")
 
 
+def test_calendar_read_normalizes_timezone_naive_bounds_to_rfc3339_utc(tmp_path):
+    import asyncio
+    import httpx
+    from app.connectors.google_calendar import fetch_calendar_events
+    from app.connectors.google_oauth import CALENDAR_READ_SCOPE
+
+    database = Database(tmp_path / "calendar-naive-range.sqlite3")
+    database.initialize()
+    database.set_connector_connection("user-a", "google_calendar", "connected", [CALENDAR_READ_SCOPE])
+    requested_bounds = {}
+
+    class FakeOAuth:
+        async def access_token(self, user_id):
+            assert user_id == "user-a"
+            return "secret-access-token"
+
+    def respond(request):
+        requested_bounds.update(request.url.params)
+        return httpx.Response(200, json={"items": []})
+
+    async def read():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await fetch_calendar_events(
+                "user-a", database, FakeOAuth(), "2026-11-28T00:00:00", "2026-11-29T00:00:00", client,
+            )
+
+    result = asyncio.run(read())
+
+    assert result["items"] == []
+    assert requested_bounds["timeMin"] == "2026-11-28T00:00:00Z"
+    assert requested_bounds["timeMax"] == "2026-11-29T00:00:00Z"
+
+
+def test_calendar_tool_uses_current_time_and_shared_connector_context(tmp_path, monkeypatch):
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+    import json
+    from agents.tool import ToolContext
+    import app.connectors.google_calendar as calendar_module
+    from app.connectors.context import ConnectorToolContext
+    from app.connectors.google_calendar import calendar_list_events
+
+    database = Database(tmp_path / "calendar-relative-range.sqlite3")
+    database.initialize()
+    before_call = datetime.now(timezone.utc)
+
+    class FakeOAuth:
+        pass
+
+    async def fake_fetch(user_id, received_database, oauth, time_min, time_max, http_client=None):
+        assert user_id == "user-a"
+        assert received_database is database
+        assert isinstance(oauth, FakeOAuth)
+        assert http_client is None
+        start = datetime.fromisoformat(time_min.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(time_max.replace("Z", "+00:00"))
+        assert before_call <= start <= datetime.now(timezone.utc)
+        assert end - start == timedelta(days=7)
+        return {"items": []}
+
+    monkeypatch.setattr(calendar_module, "fetch_calendar_events", fake_fetch)
+    context = ConnectorToolContext("user-a", database, google_oauth=FakeOAuth())
+    arguments = json.dumps({"days_ahead": 7})
+
+    result = asyncio.run(calendar_list_events.on_invoke_tool(
+        ToolContext(
+            context=context, tool_name="calendar_list_events", tool_arguments=arguments, tool_call_id="test-call",
+        ),
+        arguments,
+    ))
+
+    assert result == {"items": []}
+
+
 def test_calendar_oauth_is_exposed_only_when_server_configuration_is_complete(tmp_path):
     from cryptography.fernet import Fernet
     settings = Settings(

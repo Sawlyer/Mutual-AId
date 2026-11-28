@@ -83,19 +83,53 @@ Pour générer la clé de chiffrement, depuis `backend/` :
 uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-## Essayer l’orchestration
+## Scénarios à essayer
 
-Dans une nouvelle conversation, demandez :
+Ces demandes sont conçues pour rendre visibles les choix des agents, les outils consultés et les limites des données. Connectez le service concerné puis activez-le dans le composer avant l’essai. Les connecteurs intégrés sont en lecture seule.
 
-> Je reprends une activité physique douce après une longue pause. Je peux consacrer 30 minutes au sport le lundi, le mercredi et le samedi, et je préfère la marche. Propose un programme général sur deux semaines ainsi qu’un planning qui respecte ces créneaux. Vérifie les durées et les jours de repos, indique tes hypothèses et ne crée aucun événement dans mon agenda.
+### Santé et agenda
 
-Dans l’exécution, vérifiez le plan, les dépendances, les agents affectés, leurs compétences et la revue du résultat. Dans **Agents**, les profils utilisés doivent être consultables et modifiables. Si le modèle répond sans créer d’exécution, vérifiez `OPENAI_API_KEY`, `OPENAI_MODEL` et les journaux du backend.
+Avec Google Calendar connecté, demandez :
 
-### Vérifier le connecteur GitHub
+> Consulte mon agenda des sept prochains jours et aide-moi à répartir trois séances de marche de 30 minutes, mes cours et des horaires de sommeil réguliers. Vérifie les conflits, distingue les événements observés de tes hypothèses et explique les compromis. Ne modifie pas mon agenda. Si une information indispensable manque, pose-moi une question avant de proposer un planning.
 
-Après avoir configuré et connecté GitHub, activez-le dans le composer et demandez :
+Ce scénario vérifie l’agent planificateur, le conseiller santé, la lecture de l’agenda et la revue du résultat. Le système doit demander les contraintes manquantes au lieu d’inventer des disponibilités.
 
-> Dans `Sawlyer/Mutual-AId`, donne les cinq issues ouvertes les plus récemment modifiées, avec leur numéro et leur titre. N’effectue aucune modification.
+### Issues GitHub
+
+Après avoir connecté GitHub, activez-le dans le composer et demandez :
+
+> Dans `Sawlyer/Mutual-AId`, analyse les issues ouvertes. Regroupe-les par thème, indique les blocages et propose trois prochaines actions avec les numéros d’issues. N’effectue aucune modification.
+
+Vérifiez que les recommandations citent des numéros d’issues et que le connecteur ne fait que lire.
+
+### Préparer une synthèse depuis Gmail
+
+Avec Gmail connecté, demandez :
+
+> Recherche les derniers messages de mon enseignante qui mentionnent les soutenances. Résume les échéances, les attentes de présentation et les questions auxquelles notre équipe doit répondre. Signale les éléments qui ne figurent pas dans les extraits disponibles. Ne réponds à aucun message.
+
+Le connecteur expose les résultats de recherche et leurs extraits ; demandez à Mutual-AId de signaler clairement quand ils ne suffisent pas à confirmer un détail.
+
+### Retrouver des documents dans Drive
+
+Avec Google Drive connecté, demandez :
+
+> Recherche dans mon Drive les fichiers dont le nom évoque le MVP ou la soutenance. Classe-les par type et date de modification, puis indique lesquels semblent les plus récents. N’ouvre, ne déplace et ne modifie aucun fichier.
+
+Ce scénario teste la recherche de métadonnées Drive. Il ne demande pas de résumer le contenu des fichiers.
+
+### Outils d’un serveur MCP
+
+Après avoir ajouté un serveur MCP, testé sa connexion et approuvé ses outils de lecture, demandez :
+
+> Consulte les informations accessibles en lecture sur [l’objet que ce serveur MCP expose]. Résume les éléments utiles et indique les outils utilisés. Ne crée, ne modifie et ne supprime rien.
+
+Dans la fiche de l’agent, seules les suggestions pertinentes sont mises en avant ; l’affectation à l’agent reste à confirmer. À l’exécution, les outils doivent être approuvés, affectés à cet agent et autorisés pour la conversation.
+
+### Vérifier les compétences d’un agent
+
+Dans **Agents**, ouvrez un profil et consultez la bibliothèque locale. Les compétences recommandées sont classées d’après le rôle et la description de l’agent. Essayez d’affecter une compétence pertinente, puis lancez une demande liée à son rôle et vérifiez qu’elle apparaît dans l’exécution. Une compétence générée reste inactive tant qu’elle n’a pas été approuvée.
 
 ## Fonctionnalités
 

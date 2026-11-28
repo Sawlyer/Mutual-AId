@@ -22,6 +22,7 @@ class AgentProfileRead(BaseModel):
     template_version: int
     created_at: str
     updated_at: str
+    merged_into_id: str | None = None
     skill_ids: list[str] = Field(default_factory=list)
     skills: list[AgentSkillRead] = Field(default_factory=list)
 
@@ -49,6 +50,27 @@ class AgentProfileUpdate(BaseModel):
     skill_ids: list[str] | None = Field(default=None, max_length=20)
 
     model_config = ConfigDict(extra="forbid")
+
+
+class AgentMergeSuggestion(BaseModel):
+    source_profile_id: str
+    source_name: str
+    target_profile_id: str
+    target_name: str
+    similarity_score: float
+    reasons: list[str]
+
+
+class AgentMergeRequest(BaseModel):
+    source_profile_id: str
+    include_mcp_tools: bool = False
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class AgentMergeResult(BaseModel):
+    source: AgentProfileRead
+    target: AgentProfileRead
 
 
 class AgentSkillCreate(BaseModel):
