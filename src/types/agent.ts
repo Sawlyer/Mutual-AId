@@ -17,6 +17,7 @@ export interface AgentProfile {
   template_version: number
   created_at: string
   updated_at: string
+  merged_into_id?: string | null
   skill_ids: string[]
   skills: AgentSkill[]
 }
@@ -70,6 +71,15 @@ export interface SkillUpgradeResult {
 export interface AgentCatalog {
   profiles: AgentProfile[]
   capabilities: AgentCapability[]
+}
+
+export interface AgentMergeSuggestion {
+  source_profile_id: string
+  source_name: string
+  target_profile_id: string
+  target_name: string
+  similarity_score: number
+  reasons: string[]
 }
 
 export interface AgentProfileInput {

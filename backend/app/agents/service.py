@@ -1,7 +1,8 @@
 import re
+from difflib import SequenceMatcher
 from uuid import uuid4
 
-from app.agents.models import AgentCapability, AgentProfileCreate, AgentProfileRead, AgentProfileUpdate, AgentSkillCreate, AgentSkillUpdate
+from app.agents.models import AgentCapability, AgentMergeResult, AgentMergeSuggestion, AgentProfileCreate, AgentProfileRead, AgentProfileUpdate, AgentSkillCreate, AgentSkillUpdate
 from app.agents.skills import AgentSkillRead, SkillCatalogComparison, SkillCatalogItem, SkillUpgradeResult
 from app.agents.skill_catalog import SKILL_CATALOG_VERSIONS, catalog_skill, catalog_skill_version, search_catalog
 from app.agents.templates import TEMPLATES, list_capabilities
@@ -55,9 +56,12 @@ class AgentService:
         return self._profile_read(user_id, row)
 
     def update_profile(self, user_id: str, profile_id: str, changes: AgentProfileUpdate) -> AgentProfileRead | None:
-        if self.database.get_agent_profile(user_id, profile_id) is None:
+        current = self.database.get_agent_profile(user_id, profile_id)
+        if current is None:
             return None
         update = changes.model_dump(exclude_unset=True, exclude_none=True)
+        if current.get("merged_into_id") and update.get("enabled") is True:
+            raise ValueError("Un agent fusionné ne peut pas être réactivé.")
         skill_ids = update.pop("skill_ids", None)
         if skill_ids is not None and not self.database.set_agent_profile_skill_ids(user_id, profile_id, skill_ids):
             raise InvalidSkillAssignment("One or more skills are unavailable to this user")
@@ -244,6 +248,52 @@ class AgentService:
 
     def delete_profile(self, user_id: str, profile_id: str) -> bool:
         return self.database.delete_agent_profile(user_id, profile_id)
+
+    def merge_suggestions(self, user_id: str) -> list[AgentMergeSuggestion]:
+        profiles = [profile for profile in self.list_profiles(user_id) if profile.enabled and not profile.merged_into_id]
+        suggestions: list[AgentMergeSuggestion] = []
+        for index, target in enumerate(profiles):
+            for source in profiles[index + 1:]:
+                shared_capabilities = set(target.capability_ids) & set(source.capability_ids)
+                target_skill_names = {skill.name.casefold().strip() for skill in target.skills}
+                source_skill_names = {skill.name.casefold().strip() for skill in source.skills}
+                shared_skills = target_skill_names & source_skill_names
+                target_text = " ".join((target.name, target.domain, target.description)).casefold()
+                source_text = " ".join((source.name, source.domain, source.description)).casefold()
+                name_similarity = SequenceMatcher(None, target.name.casefold(), source.name.casefold()).ratio()
+                target_tokens = set(re.findall(r"[a-z0-9à-ÿ]+", target_text))
+                source_tokens = set(re.findall(r"[a-z0-9à-ÿ]+", source_text))
+                text_similarity = len(target_tokens & source_tokens) / max(1, len(target_tokens | source_tokens))
+                capability_similarity = len(shared_capabilities) / max(1, len(set(target.capability_ids) | set(source.capability_ids)))
+                skill_similarity = len(shared_skills) / max(1, len(target_skill_names | source_skill_names))
+                score = max(name_similarity, text_similarity, capability_similarity, skill_similarity)
+                if score < 0.55:
+                    continue
+                reasons: list[str] = []
+                if shared_capabilities:
+                    reasons.append("Ils partagent les mêmes domaines de capacité.")
+                if shared_skills:
+                    reasons.append("Ils ont des compétences de même nom.")
+                if name_similarity >= 0.55 or text_similarity >= 0.35:
+                    reasons.append("Leur nom et leur description sont proches.")
+                suggestions.append(AgentMergeSuggestion(
+                    source_profile_id=source.id, source_name=source.name,
+                    target_profile_id=target.id, target_name=target.name,
+                    similarity_score=round(score, 2), reasons=reasons,
+                ))
+        return sorted(suggestions, key=lambda item: (-item.similarity_score, item.target_name.casefold(), item.source_name.casefold()))
+
+    def merge_profiles(
+        self, user_id: str, target_profile_id: str, source_profile_id: str, include_mcp_tools: bool = False,
+    ) -> AgentMergeResult:
+        merged = self.database.merge_agent_profiles(user_id, target_profile_id, source_profile_id, include_mcp_tools)
+        if merged is None:
+            raise KeyError("Agent profile not found")
+        source_row, target_row = merged
+        return AgentMergeResult(
+            source=self._profile_read(user_id, source_row),
+            target=self._profile_read(user_id, target_row),
+        )
 
     def ensure_for_capability(self, user_id: str, capability_id: str) -> AgentProfileRead | None:
         template = TEMPLATES.get(capability_id)

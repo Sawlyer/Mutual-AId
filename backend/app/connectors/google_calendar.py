@@ -17,7 +17,7 @@ class GoogleCalendarError(RuntimeError):
 def _parse_rfc3339(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
-        raise ValueError("A time zone offset is required")
+        parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
 
 
@@ -39,7 +39,9 @@ async def fetch_calendar_events(
     try:
         token = await oauth.access_token(user_id)
         params = {
-            "timeMin": time_min, "timeMax": time_max, "singleEvents": "true", "orderBy": "startTime",
+            "timeMin": start.isoformat().replace("+00:00", "Z"),
+            "timeMax": end.isoformat().replace("+00:00", "Z"),
+            "singleEvents": "true", "orderBy": "startTime",
             "maxResults": "100", "fields": "items(id,summary,start,end,status),nextPageToken",
         }
         if http_client:
@@ -73,15 +75,20 @@ CalendarToolContext = ConnectorToolContext
 
 @function_tool(
     name_override="calendar_list_events",
-    description_override="Read the connected user's Google Calendar events in an explicit date range. Returns only event title, start, end, and status.",
+    description_override="Read the connected user's Google Calendar events for the next days_ahead days from now (1 to 90). The server sets the exact date range. Returns only event title, start, end, and status.",
     timeout=20,
 )
 async def calendar_list_events(
-    ctx: RunContextWrapper[CalendarToolContext], time_min: str, time_max: str
+    ctx: RunContextWrapper[CalendarToolContext], days_ahead: int
 ) -> dict[str, object]:
-    """List events between two RFC3339 timestamps, with a maximum range of 90 days."""
+    """List events from now through the requested number of days, capped at 90."""
     if ctx.context.google_oauth is None:
         raise GoogleCalendarError("Google OAuth is unavailable")
+    if isinstance(days_ahead, bool) or not 1 <= days_ahead <= 90:
+        raise ValueError("Calendar range must be between 1 and 90 days")
+    start = datetime.now(timezone.utc)
+    end = start + timedelta(days=days_ahead)
     return await fetch_calendar_events(
-        ctx.context.user_id, ctx.context.database, ctx.context.google_oauth, time_min, time_max, ctx.context.http_client
+        ctx.context.user_id, ctx.context.database, ctx.context.google_oauth,
+        start.isoformat().replace("+00:00", "Z"), end.isoformat().replace("+00:00", "Z"),
     )

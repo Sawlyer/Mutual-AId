@@ -38,6 +38,51 @@ def test_agent_profile_crud_is_owner_scoped(tmp_path):
     assert database.get_agent_profile("user-a", "profile-a") is None
 
 
+def test_agent_merge_suggestions_and_merge_preserve_source_and_union_skills(tmp_path):
+    from app.agents.models import AgentSkillCreate
+    from app.agents.service import AgentService
+
+    database = Database(tmp_path / "agent-merge.sqlite3")
+    database.initialize()
+    service = AgentService(database)
+    source = database.create_agent_profile("user-a", {**profile_data("source"), "name": "Conseiller santé"})
+    target = database.create_agent_profile("user-a", {
+        **profile_data("target"), "name": "Coach habitudes", "instructions": "Organise l’agenda de façon réaliste.",
+    })
+    skill = service.create_skill("user-a", AgentSkillCreate(name="Routine santé", instructions="Préparer des habitudes réalistes."), source["id"])
+    database.replace_agent_mcp_tools("user-a", source["id"], [("mcp-server", "search")])
+
+    suggestions = service.merge_suggestions("user-a")
+    assert len(suggestions) == 1
+    assert {suggestions[0].source_profile_id, suggestions[0].target_profile_id} == {source["id"], target["id"]}
+
+    result = service.merge_profiles("user-a", target["id"], source["id"], include_mcp_tools=True)
+
+    assert result.source.enabled is False
+    assert result.source.merged_into_id == target["id"]
+    assert skill.id in result.target.skill_ids
+    assert any(item.name == "Consignes de Conseiller santé" and item.instructions == source["instructions"] for item in result.target.skills)
+    assert database.list_agent_mcp_tools("user-a", target["id"]) == [{"server_id": "mcp-server", "tool_name": "search"}]
+    assert database.list_agent_mcp_tools("user-a", source["id"]) == [{"server_id": "mcp-server", "tool_name": "search"}]
+    assert database.get_agent_profile("user-a", source["id"])["id"] == source["id"]
+
+
+def test_agent_merge_is_owner_scoped_and_rejects_same_profile(tmp_path):
+    import pytest
+    from app.agents.service import AgentService
+
+    database = Database(tmp_path / "agent-merge-scope.sqlite3")
+    database.initialize()
+    database.create_agent_profile("user-a", profile_data("source"))
+    database.create_agent_profile("user-b", profile_data("target", "user-b"))
+    service = AgentService(database)
+
+    with pytest.raises(KeyError):
+        service.merge_profiles("user-a", "source", "target")
+    with pytest.raises(ValueError):
+        service.merge_profiles("user-a", "source", "source")
+
+
 def test_auto_agent_capability_mapping_is_unique_per_user(tmp_path):
     database = Database(tmp_path / "agents.sqlite3")
     database.initialize()

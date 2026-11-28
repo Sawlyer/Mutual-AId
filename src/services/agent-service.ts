@@ -1,4 +1,4 @@
-import type { AgentCatalog, AgentProfile, AgentProfileInput, AgentSkill, AgentSkillInput, AgentSkillUpdate, SkillCatalogComparison, SkillCatalogItem, SkillUpgradeResult } from '@/types/agent'
+import type { AgentCatalog, AgentMergeSuggestion, AgentProfile, AgentProfileInput, AgentSkill, AgentSkillInput, AgentSkillUpdate, SkillCatalogComparison, SkillCatalogItem, SkillUpgradeResult } from '@/types/agent'
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 
@@ -31,6 +31,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const agentService = {
   list: () => request<AgentCatalog>('/agents'),
+  mergeSuggestions: () => request<AgentMergeSuggestion[]>('/agents/merge-suggestions'),
+  merge: (targetProfileId: string, sourceProfileId: string, includeMcpTools: boolean) => request<{ source: AgentProfile; target: AgentProfile }>(`/agents/${encodeURIComponent(targetProfileId)}/merge`, { method: 'POST', body: JSON.stringify({ source_profile_id: sourceProfileId, include_mcp_tools: includeMcpTools }) }),
   getProfile: (profileId: string) => request<AgentProfile>(`/agents/${encodeURIComponent(profileId)}`),
   create: (input: AgentProfileInput) => request<AgentProfile>('/agents', { method: 'POST', body: JSON.stringify(input) }),
   update: (id: string, input: Partial<AgentProfileInput>) => request<AgentProfile>(`/agents/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),

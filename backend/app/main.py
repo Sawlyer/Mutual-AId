@@ -13,7 +13,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 
 from app.agent import McpActivity, configure_openai, stream_assistant
 from app.mcp_assistant import install_mcp_assistant_instructions
-from app.agents.models import AgentProfileCreate, AgentProfileRead, AgentProfileUpdate
+from app.agents.models import AgentMergeRequest, AgentMergeResult, AgentMergeSuggestion, AgentProfileCreate, AgentProfileRead, AgentProfileUpdate
 from app.agents.service import AgentService, InvalidSkillAssignment, UnsafeGeneratedSkill
 from app.agents.models import AgentSkillCreate, AgentSkillUpdate
 from app.agents.skills import AgentSkillRead, GeneratedSkillReview, SkillCatalogComparison, SkillCatalogInstall, SkillCatalogItem, SkillUpgradeRequest, SkillUpgradeResult
@@ -207,6 +207,27 @@ async def list_agents(service: Annotated[AgentService, Depends(agent_service)], 
     return AgentCatalogRead(profiles=service.list_profiles(user.id), capabilities=service.capabilities())
 
 
+@router.get("/agents/merge-suggestions", response_model=list[AgentMergeSuggestion], summary="Proposer les agents qui se recoupent")
+async def agent_merge_suggestions(service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> list[AgentMergeSuggestion]:
+    return service.merge_suggestions(user.id)
+
+
+@router.post("/agents/{target_profile_id}/merge", response_model=AgentMergeResult,
+             dependencies=[Depends(rate_limit), TrustedOrigin], summary="Fusionner deux profils après confirmation")
+async def merge_agents(
+    target_profile_id: str,
+    payload: AgentMergeRequest,
+    service: Annotated[AgentService, Depends(agent_service)],
+    user: CurrentUser,
+) -> AgentMergeResult:
+    try:
+        return service.merge_profiles(user.id, target_profile_id, payload.source_profile_id, payload.include_mcp_tools)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Profil d’agent introuvable.") from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
 @router.post("/agents", response_model=AgentProfileRead, status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(rate_limit), TrustedOrigin], summary="Créer un profil d’agent")
 async def create_agent(payload: AgentProfileCreate, service: Annotated[AgentService, Depends(agent_service)], user: CurrentUser) -> AgentProfileRead:
@@ -235,6 +256,8 @@ async def update_agent(profile_id: str, payload: AgentProfileUpdate, service: An
         profile = service.update_profile(user.id, profile_id, payload)
     except InvalidSkillAssignment as error:
         raise HTTPException(status_code=422, detail="Une compétence de l’agent n’appartient pas à cet espace.") from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if profile is None:
         raise HTTPException(status_code=404, detail="Profil introuvable.")
     return profile

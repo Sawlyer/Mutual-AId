@@ -61,6 +61,31 @@ def test_connector_request_schemas_accept_more_than_ten_connectors():
     assert PlannedTask(id="read", title="Lire", connector_ids=connector_ids).connector_ids == connector_ids
 
 
+def test_agent_merge_suggestions_require_explicit_merge_and_keep_source(tmp_path):
+    payload = {
+        "domain": "wellness",
+        "description": "Aide à organiser des habitudes de santé.",
+        "instructions": "Propose des habitudes réalistes.",
+        "capability_ids": ["wellness_planning"],
+    }
+    with make_client(tmp_path) as client:
+        source = client.post("/api/agents", json={**payload, "name": "Conseiller santé"}).json()
+        target = client.post("/api/agents", json={**payload, "name": "Coach habitudes"}).json()
+        suggestions = client.get("/api/agents/merge-suggestions").json()
+
+        assert len(suggestions) == 1
+        assert {suggestions[0]["source_profile_id"], suggestions[0]["target_profile_id"]} == {source["id"], target["id"]}
+        assert client.get(f"/api/agents/{source['id']}").json()["merged_into_id"] is None
+
+        merged = client.post(f"/api/agents/{target['id']}/merge", json={"source_profile_id": source["id"]})
+        assert merged.status_code == 200
+        assert merged.json()["source"]["enabled"] is False
+        assert merged.json()["source"]["merged_into_id"] == target["id"]
+        assert merged.json()["target"]["enabled"] is True
+        assert client.get(f"/api/agents/{source['id']}").json()["id"] == source["id"]
+        assert client.patch(f"/api/agents/{source['id']}", json={"enabled": True}).status_code == 409
+
+
 def test_health_does_not_require_or_expose_an_api_key(tmp_path):
     with make_client(tmp_path) as client:
         health = client.get("/api/health").json()
