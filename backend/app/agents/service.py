@@ -305,10 +305,21 @@ class AgentService:
             "description": template.description, "instructions": template.instructions,
             "capability_ids": [capability_id], "template_version": template.version,
         }
-        default_skills = [
-            {"name": skill.name, "description": skill.description, "instructions": skill.instructions}
-            for skill in template.skills
-        ]
+        marketplace_match = search_catalog(category=template.domain)
+        if marketplace_match:
+            item = marketplace_match[0]
+            snapshot = {"name": item.name, "description": item.description, "instructions": item.instructions}
+            default_skills = [{
+                **snapshot, "source": "marketplace", "catalog_id": item.id,
+                "catalog_version": item.version, "catalog_snapshot": snapshot,
+            }]
+        else:
+            # The built-in profile skill is the deterministic fallback when the
+            # local catalog has no entry for this capability.
+            default_skills = [
+                {"name": skill.name, "description": skill.description, "instructions": skill.instructions}
+                for skill in template.skills
+            ]
         existing = self.database.get_auto_agent_profile(user_id, capability_id)
         if existing is not None:
             if not existing["enabled"]:

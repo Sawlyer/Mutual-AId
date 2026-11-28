@@ -121,7 +121,7 @@ export function AgentDetailPage() {
 
     <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
       <Card><CardContent className="space-y-5 p-5"><AgentSkillsEditor key={`${profile.id}-${(profile.skill_ids ?? []).join(':')}`} profile={profile} onChange={setProfile} onOpenMarketplace={() => setMarketplaceOpen(true)} /></CardContent></Card>
-      <Card><CardContent className="space-y-5 p-5"><AgentMcpGrants profileId={profile.id} profileName={profile.name} onSaved={() => void refresh()} /><div className="border-t border-border/70 pt-5"><h3 className="text-sm font-semibold">À propos de cet agent</h3><dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2"><div><dt className="text-xs text-muted-foreground">État</dt><dd className="mt-1 font-medium">{profile.enabled ? 'Actif pour les prochaines missions' : 'Mis en pause'}</dd></div><div><dt className="text-xs text-muted-foreground">Origine</dt><dd className="mt-1 font-medium">{originLabel(profile)}</dd></div><div className="sm:col-span-2"><dt className="text-xs text-muted-foreground">Créé le</dt><dd className="mt-1 font-medium">{new Date(profile.created_at).toLocaleDateString('fr-FR', { dateStyle: 'long' })}</dd></div></dl></div></CardContent></Card>
+      <Card><CardContent className="space-y-5 p-5"><AgentMcpGrants profile={profile} onSaved={() => void refresh()} /><div className="border-t border-border/70 pt-5"><h3 className="text-sm font-semibold">À propos de cet agent</h3><dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2"><div><dt className="text-xs text-muted-foreground">État</dt><dd className="mt-1 font-medium">{profile.enabled ? 'Actif pour les prochaines missions' : 'Mis en pause'}</dd></div><div><dt className="text-xs text-muted-foreground">Origine</dt><dd className="mt-1 font-medium">{originLabel(profile)}</dd></div><div className="sm:col-span-2"><dt className="text-xs text-muted-foreground">Créé le</dt><dd className="mt-1 font-medium">{new Date(profile.created_at).toLocaleDateString('fr-FR', { dateStyle: 'long' })}</dd></div></dl></div></CardContent></Card>
     </div>
     <Dialog open={marketplaceOpen} onOpenChange={setMarketplaceOpen}>
       <DialogContent className="max-h-[88svh] w-[min(960px,calc(100vw-2rem))] overflow-y-auto sm:max-w-none">
@@ -129,7 +129,7 @@ export function AgentDetailPage() {
           <DialogTitle>Bibliothèque de compétences</DialogTitle>
           <DialogDescription>Choisissez une compétence du catalogue local pour l’affecter à {profile.name}.</DialogDescription>
         </DialogHeader>
-        <SkillMarketplace profileId={profile.id} onProfileChanged={refresh} showHeading={false} />
+        <SkillMarketplace profileId={profile.id} profile={profile} onProfileChanged={refresh} showHeading={false} />
       </DialogContent>
     </Dialog>
   </div>

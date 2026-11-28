@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, Check, Clock3, RefreshCw, Search, Store } from 'lucide-react'
+import { AlertTriangle, Check, Clock3, RefreshCw, Search, Sparkles, Store } from 'lucide-react'
 import { Badge } from '@/components/reui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { agentService } from '@/services/agent-service'
-import type { AgentSkill, SkillCatalogComparison, SkillCatalogItem } from '@/types/agent'
+import type { AgentProfile, AgentSkill, SkillCatalogComparison, SkillCatalogItem } from '@/types/agent'
+import { rankMarketplaceSkills } from './resource-recommendations'
 
 const categories = [
   { id: '', label: 'Toutes les catégories' },
@@ -19,7 +20,7 @@ const sourceLabel: Record<AgentSkill['source'], string> = {
   user: 'Créée par vous', marketplace: 'Marketplace Mutual-AId', generated: 'Générée par l’orchestrateur',
 }
 
-export function SkillMarketplace({ profileId, onProfileChanged, showHeading = true }: { profileId?: string; onProfileChanged?: () => void | Promise<void>; showHeading?: boolean }) {
+export function SkillMarketplace({ profileId, profile, onProfileChanged, showHeading = true }: { profileId?: string; profile?: AgentProfile; onProfileChanged?: () => void | Promise<void>; showHeading?: boolean }) {
   const [catalog, setCatalog] = useState<SkillCatalogItem[]>([])
   const [skills, setSkills] = useState<AgentSkill[]>([])
   const [audit, setAudit] = useState<Awaited<ReturnType<typeof agentService.skillAudit>>>([])
@@ -32,6 +33,11 @@ export function SkillMarketplace({ profileId, onProfileChanged, showHeading = tr
   const [notice, setNotice] = useState('')
 
   const pendingSkills = useMemo(() => skills.filter((skill) => skill.source === 'generated' && skill.review_status === 'pending'), [skills])
+  const recommendations = useMemo(() => profile ? rankMarketplaceSkills(profile, catalog) : [], [profile, catalog])
+  const recommendedIds = useMemo(() => new Set(recommendations.map(({ item }) => item.id)), [recommendations])
+  const orderedCatalog = useMemo(() => recommendations.length
+    ? [...recommendations.map(({ item }) => item), ...catalog.filter((item) => !recommendedIds.has(item.id))]
+    : catalog, [catalog, recommendations, recommendedIds])
 
   async function refresh() {
     setLoading(true)
@@ -123,16 +129,18 @@ export function SkillMarketplace({ profileId, onProfileChanged, showHeading = tr
 
     <Card><CardContent className="space-y-4 p-4">
       <div className="grid gap-3 sm:grid-cols-[1fr_220px]"><label className="relative"><span className="sr-only">Rechercher une compétence</span><Search aria-hidden="true" className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={(event) => { setLoading(true); setQuery(event.target.value) }} placeholder="Rechercher par nom, usage ou mot-clé…" className="pl-9" /></label><label><span className="sr-only">Filtrer par catégorie</span><select value={category} onChange={(event) => { setLoading(true); setCategory(event.target.value) }} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="">Toutes les catégories</option>{categories.filter((item) => item.id).map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label></div>
+      {profileId && profile && <div className="rounded-lg border border-primary/15 bg-primary/5 px-3 py-2.5 text-xs"><p className="flex items-center gap-1.5 font-medium"><Sparkles aria-hidden="true" className="size-3.5 text-primary" />Suggestions pour {profile.name}</p><p className="mt-1 text-muted-foreground">{recommendations.length ? 'Classement local selon son rôle, sa description et ses compétences. Rien n’est ajouté sans votre action.' : 'Aucune compétence du catalogue ne correspond clairement à son rôle. Vous pouvez en créer une depuis la fiche de l’agent.'}</p></div>}
       {loading && <p role="status" className="flex items-center gap-2 py-5 text-sm text-muted-foreground"><RefreshCw className="size-4 animate-spin" />Chargement du catalogue local…</p>}
       {!loading && error && <div role="alert" className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive">{error}<Button size="sm" variant="outline" className="ml-3" onClick={() => void refresh()}>Réessayer</Button></div>}
       {!loading && !error && catalog.length === 0 && <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Aucune compétence ne correspond à cette recherche.</p>}
-      {!loading && catalog.length > 0 && <ul className="grid gap-3 md:grid-cols-2">{catalog.map((item) => {
+      {!loading && orderedCatalog.length > 0 && <ul className="grid gap-3 md:grid-cols-2">{orderedCatalog.map((item) => {
         const installed = skills.find((skill) => skill.catalog_id === item.id)
+        const assigned = profileId ? Boolean(installed?.assigned_profile_ids.includes(profileId)) : Boolean(installed)
         return <li key={item.id} className="rounded-xl border border-border/80 bg-background p-4">
-          <div className="flex items-start justify-between gap-3"><div><h4 className="text-sm font-semibold">{item.name}</h4><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{item.description}</p></div><Badge variant="outline">v{item.version}</Badge></div>
+          <div className="flex items-start justify-between gap-3"><div><h4 className="text-sm font-semibold">{item.name}</h4><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{item.description}</p></div><div className="flex shrink-0 items-center gap-1.5">{recommendedIds.has(item.id) && <Badge variant="primary-light" size="xs"><Sparkles aria-hidden="true" />Suggestion</Badge>}<Badge variant="outline">v{item.version}</Badge></div></div>
           <div className="mt-3 flex flex-wrap gap-1.5">{item.tags.map((tag) => <Badge key={tag} variant="secondary" size="xs">{tag}</Badge>)}<Badge variant="outline" size="xs">{categories.find((entry) => entry.id === item.category)?.label ?? item.category}</Badge></div>
           <p className="mt-3 text-xs text-muted-foreground">Par {item.author} · Mis à jour le {item.updated_at}</p>
-          <div className="mt-3 flex justify-end gap-2">{installed ? <><Badge className="self-center" variant="secondary"><Check aria-hidden="true" className="mr-1 size-3" />Installée · v{installed.catalog_version}</Badge><Button size="sm" variant="outline" disabled={!!busyId} onClick={() => void compare(item.id)}>{busyId === item.id ? 'Comparaison…' : 'Comparer'}</Button></> : <Button size="sm" disabled={!!busyId} onClick={() => void install(item)}>{busyId === item.id ? 'Installation…' : 'Installer'}</Button>}</div>
+          <div className="mt-3 flex justify-end gap-2">{assigned && installed ? <><Badge className="self-center" variant="secondary"><Check aria-hidden="true" className="mr-1 size-3" />{profileId ? 'Affectée' : 'Installée'} · v{installed.catalog_version}</Badge><Button size="sm" variant="outline" disabled={!!busyId} onClick={() => void compare(item.id)}>{busyId === item.id ? 'Comparaison…' : 'Comparer'}</Button></> : <Button size="sm" disabled={!!busyId} onClick={() => void install(item)}>{busyId === item.id ? 'Enregistrement…' : profileId ? installed ? 'Affecter à cet agent' : 'Installer pour cet agent' : 'Installer'}</Button>}</div>
         </li>
       })}</ul>}
     </CardContent></Card>

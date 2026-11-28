@@ -26,6 +26,14 @@ def make_client(tmp_path, openai_configured=False, **overrides):
     return client
 
 
+def test_default_rate_limit_allows_normal_multistep_chat_setup(monkeypatch):
+    monkeypatch.delenv("REQUESTS_PER_MINUTE", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.requests_per_minute == 60
+
+
 def test_create_list_and_read_conversation(tmp_path):
     with make_client(tmp_path) as client:
         created = client.post("/api/conversations", json={}).json()

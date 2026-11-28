@@ -118,6 +118,26 @@ def test_ensure_for_capability_creates_and_reuses_reviewed_profile(tmp_path):
     assert service.ensure_for_capability("user-a", "unknown_capability") is None
 
 
+def test_auto_agent_installs_matching_local_marketplace_skill_and_keeps_template_fallback(tmp_path):
+    from app.agents.service import AgentService
+
+    database = Database(tmp_path / "agents-marketplace-match.sqlite3")
+    database.initialize()
+    service = AgentService(database)
+
+    planner = service.ensure_for_capability("user-a", "schedule_planning")
+    wellness = service.ensure_for_capability("user-a", "wellness_planning")
+
+    assert planner is not None
+    assert [(skill.name, skill.source, skill.catalog_id) for skill in planner.skills] == [
+        ("Planification réaliste", "marketplace", "planning.realistic-schedule"),
+    ]
+    assert wellness is not None
+    assert [(skill.name, skill.source, skill.catalog_id) for skill in wellness.skills] == [
+        ("Organisation de routines bien-être", "user", None),
+    ]
+
+
 def test_legacy_auto_agent_receives_its_default_skill_once(tmp_path):
     from app.agents.service import AgentService
 

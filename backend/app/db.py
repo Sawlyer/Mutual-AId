@@ -727,9 +727,15 @@ class Database:
                 skill_id = str(uuid4())
                 connection.execute(
                     """INSERT INTO agent_skills
-                       (id, user_id, name, description, instructions, enabled, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
-                    (skill_id, user_id, skill["name"], skill["description"], skill["instructions"], timestamp, timestamp),
+                       (id, user_id, name, description, instructions, enabled, source, catalog_id, catalog_version,
+                        catalog_snapshot_json, review_status, generated_by, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 'approved', NULL, ?, ?)""",
+                    (
+                        skill_id, user_id, skill["name"], skill["description"], skill["instructions"],
+                        skill.get("source", "user"), skill.get("catalog_id"), skill.get("catalog_version"),
+                        json.dumps(skill["catalog_snapshot"]) if skill.get("catalog_snapshot") else None,
+                        timestamp, timestamp,
+                    ),
                 )
                 connection.execute(
                     "INSERT INTO agent_profile_skills (user_id, profile_id, skill_id, created_at) VALUES (?, ?, ?, ?)",
